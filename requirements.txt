@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+plotly
+requests
+feedparser
+ccxt
+yfinance
+ta
+fredapi
+google-generativeai
+firebase-admin

@@ -1,0 +1,1606 @@
+"""
+크립토 인사이트 대시보드 V6.8 (Smart Target Guide Edition)
+==============================================================
+[V6.8 업데이트]
+1. 🎯 스마트 목표가 가이드: 자산 입력 시 전고점, 피보나치, 2배 수익, 라운드 피겨 가격 자동 제안
+2. 🧮 자동 계산 로직: 입력된 평단가와 환율을 기반으로 합리적인 매도 타겟 산출
+3. 기존 기능 통합: DXY, 뉴스 번역, 코인 상세 정보 등 V6.7 기능 유지
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+import requests
+import feedparser
+from datetime import datetime, timedelta
+import time
+import re
+import math
+
+# -----------------------------------------------------------------------------
+# 라이브러리 임포트 (예외 처리)
+# -----------------------------------------------------------------------------
+try:
+    import ccxt
+    CCXT_AVAILABLE = True
+except ImportError:
+    CCXT_AVAILABLE = False
+
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    YFINANCE_AVAILABLE = False
+
+try:
+    from ta.momentum import RSIIndicator
+    from ta.trend import SMAIndicator, MACD
+    TA_AVAILABLE = True
+except ImportError:
+    TA_AVAILABLE = False
+
+try:
+    from fredapi import Fred
+    FRED_AVAILABLE = True
+except ImportError:
+    FRED_AVAILABLE = False
+
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+
+# -----------------------------------------------------------------------------
+# 페이지 설정 & CSS
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="크립토 인사이트 V6.8",
+    page_icon="🐋",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    .stApp { background-color: #f8fafc; color: #1e293b; }
+    .metric-card { background: white; padding: 15px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .kimchi-badge { padding: 5px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; display: inline-block; }
+    .k-red { background-color: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
+    .k-blue { background-color: #dbeafe; color: #1e40af; border: 1px solid #60a5fa; }
+    .k-green { background-color: #dcfce7; color: #166534; border: 1px solid #4ade80; }
+    
+    .info-label { font-size: 0.85em; color: #6b7280; margin-bottom: 2px; }
+    .info-value { font-size: 1.1em; font-weight: 700; color: #111827; }
+    
+    .news-card { padding: 10px; border-bottom: 1px solid #eee; }
+    .news-source { font-size: 0.8em; color: #64748b; font-weight: bold; }
+    .news-title { font-size: 1.0em; font-weight: 600; color: #1e293b; text-decoration: none; }
+    .news-title:hover { color: #2563eb; text-decoration: underline; }
+    
+    .ai-box { background-color: #f0fdf4; border: 1px solid #bbf7d0; padding: 15px; border-radius: 8px; margin-top: 10px; }
+    .alert-box { padding: 15px; border-radius: 8px; margin-bottom: 10px; font-weight: bold; }
+    .alert-danger { background-color: #fee2e2; color: #991b1b; }
+    .alert-success { background-color: #dcfce7; color: #166534; }
+    .scroll-box { height: 200px; overflow-y: auto; background-color: #ffffff; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 0.95em; line-height: 1.6; color: #334155; }
+    
+    /* [V6.8] 목표가 가이드 스타일 */
+    .target-guide-box {
+        background-color: #eff6ff; 
+        border: 1px solid #bfdbfe; 
+        border-radius: 8px; 
+        padding: 12px; 
+        margin-top: 10px; 
+        margin-bottom: 10px;
+    }
+    .guide-title { font-size: 0.9em; font-weight: bold; color: #1e40af; margin-bottom: 8px; border-bottom: 1px solid #dbeafe; padding-bottom: 4px; }
+    .guide-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 4px; }
+    .guide-label { color: #475569; }
+    .guide-val { font-weight: bold; color: #0f172a; cursor: pointer; }
+    
+    .twitter-btn { display: block; width: 100%; padding: 10px; background-color: #1DA1F2; color: white !important; border-radius: 8px; text-align: center; text-decoration: none; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# 세션 상태 초기화
+# -----------------------------------------------------------------------------
+if 'portfolio' not in st.session_state: st.session_state.portfolio = []
+if 'manual_data' not in st.session_state:
+    st.session_state.manual_data = {'mvrv_zscore': 2.2, 'coinbase_rank': 50, 'ism_pmi': 48.0}
+if 'telegram' not in st.session_state:
+    st.session_state.telegram = {'bot_token': '', 'chat_id': '', 'enabled': False}
+if 'sent_alerts' not in st.session_state:
+    st.session_state.sent_alerts = set()
+if 'username' not in st.session_state:
+    st.session_state.username = ""
+if 'is_logged_in' not in st.session_state:
+    st.session_state.is_logged_in = False
+
+# -----------------------------------------------------------------------------
+# [V7.5] Firebase 연동 함수
+# -----------------------------------------------------------------------------
+def init_firebase():
+    """Streamlit Secrets를 이용해 Firebase에 연결"""
+    if not FIREBASE_AVAILABLE:
+        return None
+    
+    if not firebase_admin._apps:
+        try:
+            cred_dict = dict(st.secrets["firebase"])
+            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+        except Exception as e:
+            st.error(f"Firebase 연결 실패: {e}")
+            return None
+    
+    return firestore.client()
+
+def load_user_data(username):
+    """Firestore에서 사용자 데이터 불러오기"""
+    db = init_firebase()
+    if not db:
+        return None
+    
+    try:
+        doc_ref = db.collection("users").document(username)
+        doc = doc_ref.get()
+        
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return {
+                "portfolio": [], 
+                "manual_data": {'mvrv_zscore': 2.2, 'coinbase_rank': 50, 'ism_pmi': 48.0},
+                "telegram": {'bot_token': '', 'chat_id': '', 'enabled': False},
+                "api_keys": {"gemini": "", "fred": "", "openai": "", "claude": "", "grok": ""}
+            }
+    except Exception as e:
+        st.warning(f"데이터 로드 실패: {e}")
+        return None
+
+def save_user_data(username):
+    """Firestore에 사용자 데이터 저장"""
+    db = init_firebase()
+    if not db or not username:
+        return False
+    
+    try:
+        data = {
+            "portfolio": st.session_state.portfolio,
+            "manual_data": st.session_state.manual_data,
+            "telegram": st.session_state.telegram,
+            "api_keys": {
+                "gemini": st.session_state.get("api_gemini", ""),
+                "fred": st.session_state.get("api_fred", ""),
+                "openai": st.session_state.get("api_openai", ""),
+                "claude": st.session_state.get("api_claude", ""),
+                "grok": st.session_state.get("api_grok", "")
+            }
+        }
+        db.collection("users").document(username).set(data)
+        return True
+    except Exception as e:
+        st.warning(f"데이터 저장 실패: {e}")
+        return False
+
+# -----------------------------------------------------------------------------
+# [V7.4] AI 투자 위원회 설정
+# -----------------------------------------------------------------------------
+AI_MODELS = {
+    "OPENAI": "gpt-4o",
+    "ANTHROPIC": "claude-3-5-sonnet-20241022",
+    "GOOGLE": "gemini-pro",
+    "XAI": "grok-2-latest"
+}
+
+def ask_chatgpt(api_key, prompt):
+    """OpenAI GPT 호출"""
+    try:
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        data = {
+            "model": AI_MODELS["OPENAI"],
+            "messages": [
+                {"role": "system", "content": "You are a conservative hedge fund manager. Be critical and risk-averse. Answer in Korean."}, 
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.5, "max_tokens": 500
+        }
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=30)
+        if res.status_code == 200:
+            return res.json()['choices'][0]['message']['content']
+        return f"❌ 오류 ({res.status_code})"
+    except Exception as e: return f"연결 실패: {str(e)}"
+
+def ask_claude(api_key, prompt):
+    """Anthropic Claude 호출"""
+    try:
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+        data = {
+            "model": AI_MODELS["ANTHROPIC"],
+            "max_tokens": 500,
+            "messages": [{"role": "user", "content": prompt}],
+            "system": "You are a cold-hearted data analyst. Focus only on numbers and indicators. Answer in Korean."
+        }
+        res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data, timeout=30)
+        if res.status_code == 200:
+            return res.json()['content'][0]['text']
+        return f"❌ 오류 ({res.status_code})"
+    except Exception as e: return f"연결 실패: {str(e)}"
+
+def ask_grok(api_key, prompt):
+    """xAI Grok 호출"""
+    try:
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        data = {
+            "model": AI_MODELS["XAI"],
+            "messages": [
+                {"role": "system", "content": "You are an aggressive crypto whale. Look for high risk/reward opportunities. Answer in Korean."}, 
+                {"role": "user", "content": prompt}
+            ],
+            "stream": False
+        }
+        res = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=data, timeout=30)
+        if res.status_code == 200:
+            return res.json()['choices'][0]['message']['content']
+        return f"❌ 오류 ({res.status_code})"
+    except Exception as e: return f"연결 실패: {str(e)}"
+
+# -----------------------------------------------------------------------------
+# 데이터 함수 (API)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=300)
+def get_usd_krw_rate():
+    try:
+        if YFINANCE_AVAILABLE:
+            hist = yf.Ticker("KRW=X").history(period="1d")
+            if not hist.empty: return float(hist['Close'].iloc[-1])
+    except: pass
+    return 1450.0
+
+# --- 텔레그램 알림 함수 ---
+def send_telegram_alert(message):
+    """텔레그램으로 알림 메시지 전송"""
+    tg = st.session_state.telegram
+    if not tg.get('enabled') or not tg.get('bot_token') or not tg.get('chat_id'):
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{tg['bot_token']}/sendMessage"
+        payload = {'chat_id': tg['chat_id'], 'text': message, 'parse_mode': 'HTML'}
+        res = requests.post(url, data=payload, timeout=5)
+        return res.status_code == 200
+    except:
+        return False
+
+def check_and_send_alerts(portfolio, rate, mvrv):
+    """매도 신호 및 목표가 도달 시 알림 전송"""
+    alerts = []
+    
+    # 1. MVRV Z-Score 고평가 경고 (7.0 이상)
+    if mvrv >= 7.0:
+        alert_key = "mvrv_high"
+        if alert_key not in st.session_state.sent_alerts:
+            alerts.append(f"🚨 <b>MVRV 고평가 경고!</b>\n\nMVRV Z-Score가 {mvrv:.1f}에 도달했습니다.\n\uc2dc장 고점 가능성이 높으니 차익실현을 고려하세요.")
+            st.session_state.sent_alerts.add(alert_key)
+    
+    # 2. 목표가 도달 알림
+    for p in portfolio:
+        ticker = p['ticker']
+        target = p.get('target_price', 0)
+        if target <= 0:
+            continue
+        
+        cur_p, curr = get_market_price(ticker, p.get('exchange', 'Binance'))
+        if cur_p <= 0:
+            continue
+        
+        # 목표가 도달 여부
+        if cur_p >= target:
+            alert_key = f"target_{ticker}_{target}"
+            if alert_key not in st.session_state.sent_alerts:
+                unit = '₩' if curr == 'KRW' else '$'
+                alerts.append(f"🎯 <b>{ticker} 목표가 도달!</b>\n\n현재가: {unit}{cur_p:,.2f}\n목표가: {unit}{target:,.2f}\n\n매도 타이밍이 왔습니다! 📈")
+                st.session_state.sent_alerts.add(alert_key)
+    
+    # 알림 전송
+    for msg in alerts:
+        send_telegram_alert(msg)
+
+@st.cache_data(ttl=300)
+def get_dxy_index():
+    try:
+        if YFINANCE_AVAILABLE:
+            hist = yf.Ticker("DX-Y.NYB").history(period="5d")
+            if not hist.empty:
+                curr = float(hist['Close'].iloc[-1])
+                prev = float(hist['Close'].iloc[-2])
+                return curr, (curr-prev)/prev*100
+    except: pass
+    return 104.5, 0.0
+
+@st.cache_data(ttl=60)
+def get_stock_price(ticker):
+    """주식 가격 조회 (미국/한국)"""
+    try:
+        if YFINANCE_AVAILABLE:
+            df = yf.Ticker(ticker).history(period="1d")
+            if not df.empty: return float(df['Close'].iloc[-1])
+    except: pass
+    return 0.0
+
+@st.cache_data(ttl=10)
+def get_market_price(ticker, exchange):
+    # [V7.0] 주식 지원
+    if exchange == "US Stock": return get_stock_price(ticker), "USD"
+    elif exchange == "KR Stock": return get_stock_price(ticker), "KRW"
+    
+    try:
+        if exchange == "Upbit":
+            url = f"https://api.upbit.com/v1/ticker?markets=KRW-{ticker}"
+            return float(requests.get(url, timeout=2).json()[0]['trade_price']), "KRW"
+        elif exchange == "Bithumb":
+            url = f"https://api.bithumb.com/public/ticker/{ticker}_KRW"
+            res = requests.get(url, timeout=2).json()
+            if res['status'] == '0000': return float(res['data']['closing_price']), "KRW"
+        elif exchange == "Korbit":
+            url = f"https://api.korbit.co.kr/v1/ticker?currency_pair={ticker.lower()}_krw"
+            return float(requests.get(url, timeout=2).json()['last']), "KRW"
+        elif CCXT_AVAILABLE:
+            ex_map = {"Binance": "binance", "OKX": "okx", "Bitget": "bitget", "Gate.io": "gateio"}
+            if exchange in ex_map:
+                ex = getattr(ccxt, ex_map[exchange])()
+                return float(ex.fetch_ticker(f"{ticker}/USDT")['last']), "USD"
+    except: pass
+    return 0.0, "USD"
+
+@st.cache_data(ttl=1800)
+def get_translated_news(keywords, api_key=None):
+    from urllib.parse import quote
+    
+    news_items = []
+    
+    # 1. Google News 한국어 RSS (가장 안정적)
+    korean_queries = ["비트코인", "암호화폐", "가상자산"]
+    for query in korean_queries:
+        try:
+            url = f"https://news.google.com/rss/search?q={quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
+            f = feedparser.parse(url)
+            for entry in f.entries[:3]:
+                # 중복 제거
+                if not any(n['title'] == entry.title for n in news_items):
+                    source = entry.source.title if hasattr(entry, 'source') else "Google News"
+                    news_items.append({
+                        'source': source, 'title': entry.title, 'link': entry.link,
+                        'lang': 'ko', 'date': entry.published[:16] if 'published' in entry else ""
+                    })
+        except: continue
+    
+    # 2. 영어 뉴스 소스 (API 키 있을 때만 추가)
+    if api_key and GENAI_AVAILABLE:
+        eng_feeds = [
+            {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+            {"name": "CoinTelegraph", "url": "https://cointelegraph.com/rss"},
+        ]
+        eng_items = []
+        for feed in eng_feeds:
+            try:
+                f = feedparser.parse(feed['url'])
+                for entry in f.entries[:2]:
+                    eng_items.append({
+                        'source': feed['name'], 'title': entry.title, 'link': entry.link,
+                        'lang': 'en', 'date': entry.published[:16] if 'published' in entry else ""
+                    })
+            except: continue
+        
+        # Gemini로 번역
+        if eng_items:
+            try:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel('gemini-pro')
+                titles = [n['title'] for n in eng_items]
+                prompt = f"다음 암호화폐 뉴스 제목들을 한국어로 번역하세요. 번호 없이 각 줄에 번역만 출력:\n" + "\n".join(titles)
+                res = model.generate_content(prompt).text.strip().split('\n')
+                
+                for i, n in enumerate(eng_items):
+                    if i < len(res):
+                        translated = res[i].strip().lstrip('0123456789.-) ').strip()
+                        if translated and len(translated) > 5:
+                            n['title'] = translated
+                            n['lang'] = 'ko'
+                news_items.extend(eng_items)
+            except: pass
+    
+    return news_items[:10]  # 최대 10개
+
+@st.cache_data(ttl=3600)
+def clean_and_translate_desc(text, api_key=None):
+    if not text: return "설명 정보가 없습니다."
+    clean_text = re.sub('<[^<]+?>', '', text).strip()
+    korean_char_count = len(re.findall('[가-힣]', clean_text))
+    is_korean = (korean_char_count / len(clean_text)) > 0.2 if len(clean_text) > 0 else False
+    if not is_korean and api_key and GENAI_AVAILABLE:
+        try:
+            genai.configure(api_key=api_key)
+            return genai.GenerativeModel('gemini-pro').generate_content(f"Translate to Korean:\n\n{clean_text}").text
+        except: return clean_text
+    return clean_text
+
+@st.cache_data(ttl=3600)
+def get_coingecko_details(ticker):
+    try:
+        mapping = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana', 'XRP': 'ripple', 'DOGE': 'dogecoin', 'ADA': 'cardano'}
+        coin_id = mapping.get(ticker.upper())
+        if not coin_id:
+            search = requests.get(f"https://api.coingecko.com/api/v3/search?query={ticker}", timeout=3).json()
+            if search.get('coins'): coin_id = search['coins'][0]['id']
+            else: return None
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=ko&tickers=false&market_data=true"
+        data = requests.get(url, timeout=5).json()
+        m = data['market_data']
+        desc_raw = data.get('description', {}).get('ko', '') or data.get('description', {}).get('en', '')
+        return {
+            'name': data['name'], 'rank': m.get('market_cap_rank', 'N/A'),
+            'market_cap': m.get('market_cap', {}).get('usd', 0),
+            'total_supply': m.get('total_supply', 0), 'circulating_supply': m.get('circulating_supply', 0),
+            'ath': m.get('ath', {}).get('usd', 0), 'ath_change': m.get('ath_change_percentage', {}).get('usd', 0),
+            'atl': m.get('atl', {}).get('usd', 0), 'atl_change': m.get('atl_change_percentage', {}).get('usd', 0),
+            'desc': desc_raw
+        }
+    except: return None
+
+# --- 차트 및 분석 함수 ---
+@st.cache_data(ttl=3600)
+def get_weekly_ohlcv(symbol="BTC", weeks=60):
+    try:
+        if CCXT_AVAILABLE:
+            pair = f"{symbol}/USDT" if '/' not in symbol else symbol
+            df = pd.DataFrame(ccxt.binance().fetch_ohlcv(pair, '1w', limit=weeks), columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            df['ts'] = pd.to_datetime(df['ts'], unit='ms')
+            return df.set_index('ts')
+    except: pass
+    return None
+
+@st.cache_data(ttl=3600)
+def get_daily_ohlcv(symbol="BTC", days=1000):
+    """Pi Cycle 계산용 일봉 데이터"""
+    try:
+        if CCXT_AVAILABLE:
+            ex = ccxt.binance()
+            df = pd.DataFrame(ex.fetch_ohlcv(f'{symbol}/USDT', '1d', limit=days), columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            df['ts'] = pd.to_datetime(df['ts'], unit='ms')
+            return df.set_index('ts')
+    except: pass
+    return None
+
+def analyze_technical(df):
+    if df is None or len(df) < 30: return {"signal": "N/A", "score": 0, "summary": []}
+    close = df['c']
+    sma20 = SMAIndicator(close, 20).sma_indicator().iloc[-1]
+    rsi = RSIIndicator(close, 14).rsi().iloc[-1]
+    summary = []
+    score = 50
+    if close.iloc[-1] > sma20: score += 20; summary.append("📈 주가 > 20주선 (상승 추세)")
+    else: score -= 20; summary.append("📉 주가 < 20주선 (하락 추세)")
+    if rsi < 30: score += 30; summary.append(f"💎 과매도 (RSI {rsi:.0f})")
+    elif rsi > 70: score -= 20; summary.append(f"🔥 과매수 (RSI {rsi:.0f})")
+    sig = "매수" if score >= 60 else "매도" if score <= 40 else "중립"
+    return {"signal": sig, "score": score, "summary": summary}
+
+@st.cache_data(ttl=3600)
+def get_historical_data(ticker, days=365):
+    try:
+        if YFINANCE_AVAILABLE: return yf.download(ticker, period=f"{days}d", interval="1d", progress=False)
+    except: pass
+    return None
+
+@st.cache_data(ttl=3600)
+def get_btc_dominance():
+    try: return requests.get("https://api.coingecko.com/api/v3/global", timeout=5).json()['data']['market_cap_percentage']['btc']
+    except: return 58.0
+
+@st.cache_data(ttl=1800)
+def get_fear_greed():
+    try: return int(requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()['data'][0]['value'])
+    except: return 50
+
+# --- [V6.8] 스마트 목표가 계산 함수 ---
+def calculate_smart_targets(price, ath):
+    if price <= 0: return {}
+    
+    # 1. Round Number (심리적 저항)
+    magnitude = 10 ** (len(str(int(price))) - 1)
+    # 현재가보다 높은 다음 라운드 숫자 (예: 92 -> 100, 1200 -> 2000)
+    round_fig = math.ceil(price / magnitude) * magnitude
+    if round_fig == price: round_fig += magnitude
+    if round_fig < price * 1.05: # 너무 가까우면 한 단계 더 위로
+        round_fig += magnitude
+
+    targets = {
+        "ATH (전고점)": ath,
+        "Fib 1.618 (불장)": ath * 1.618 if ath > 0 else 0,
+        "수익 2배 (원금회수)": price * 2,
+        "라운드 피겨 (심리)": round_fig
+    }
+    return targets
+
+# --- [V7.0] 헤지 데이터 분석 함수 ---
+@st.cache_data(ttl=3600)
+def get_hedge_data(crypto_ticker="BTC-USD", user_stocks=[]):
+    """비트코인과 [추천 헤지 자산 + 내 주식]의 상관관계 분석"""
+    tickers = {
+        "BTC": crypto_ticker,
+        "TLT (미국채)": "TLT",
+        "GLD (금)": "GLD",
+        "SCHD (배당주)": "SCHD",
+        "VOO (S&P500)": "VOO"
+    }
+    # 사용자 보유 주식 추가
+    for s in user_stocks:
+        if s not in tickers.values():
+            tickers[f"{s} (My)"] = s
+    try:
+        if YFINANCE_AVAILABLE:
+            df = yf.download(list(tickers.values()), period="6mo", progress=False)['Close']
+            inv_map = {v: k for k, v in tickers.items()}
+            df.columns = [inv_map.get(c, c) for c in df.columns]
+            normalized = (df / df.iloc[0] - 1) * 100
+            if 'BTC' in df.columns:
+                corr = df.corr()['BTC'].drop('BTC')
+                return normalized, corr
+    except: pass
+    return None, None
+
+# -----------------------------------------------------------------------------
+# 사이드바 (로그인 + 자산 관리)
+# -----------------------------------------------------------------------------
+def render_sidebar():
+    st.sidebar.title("🐋 설정 및 자산")
+    
+    # -------------------------------------------------------------------------
+    # [V7.5] 로그인 섹션
+    # -------------------------------------------------------------------------
+    if not st.session_state.is_logged_in:
+        with st.sidebar.form("login_form"):
+            st.markdown("### 🔐 로그인")
+            user_id = st.text_input("사용자 ID", placeholder="영문/숫자 입력")
+            submitted = st.form_submit_button("🚀 접속하기", use_container_width=True)
+            
+            if submitted and user_id:
+                st.session_state.username = user_id
+                st.session_state.is_logged_in = True
+                
+                # Firebase에서 데이터 로드
+                saved_data = load_user_data(user_id)
+                if saved_data:
+                    st.session_state.portfolio = saved_data.get("portfolio", [])
+                    st.session_state.manual_data = saved_data.get("manual_data", st.session_state.manual_data)
+                    st.session_state.telegram = saved_data.get("telegram", st.session_state.telegram)
+                    keys = saved_data.get("api_keys", {})
+                    st.session_state.api_gemini = keys.get("gemini", "")
+                    st.session_state.api_fred = keys.get("fred", "")
+                    st.session_state.api_openai = keys.get("openai", "")
+                    st.session_state.api_claude = keys.get("claude", "")
+                    st.session_state.api_grok = keys.get("grok", "")
+                st.rerun()
+        
+        st.sidebar.info("👆 ID를 입력하고 접속해주세요.")
+        st.stop()
+
+    # -------------------------------------------------------------------------
+    # 로그인 후: 환영 메시지 & 로그아웃
+    # -------------------------------------------------------------------------
+    st.sidebar.success(f"반갑습니다, **{st.session_state.username}**님!")
+    col1, col2 = st.sidebar.columns(2)
+    if col1.button("💾 저장", use_container_width=True):
+        if save_user_data(st.session_state.username):
+            st.sidebar.success("저장 완료!")
+    if col2.button("🚪 로그아웃", use_container_width=True):
+        save_user_data(st.session_state.username)  # 로그아웃 전 저장
+        st.session_state.clear()
+        st.rerun()
+    
+    rate = get_usd_krw_rate()
+    st.sidebar.markdown(f"**💵 기준 환율:** `{rate:,.0f} 원/$`")
+    auto_refresh = st.sidebar.checkbox("⚡ 실시간 갱신 (10초)", value=False)
+    
+    st.sidebar.divider()
+    with st.sidebar.expander("💰 자산 추가/수정", expanded=True):
+        exchanges = ["Binance", "Upbit", "Bithumb", "Korbit", "US Stock", "KR Stock", "OKX", "Bitget", "Gate.io"]
+        exchange = st.selectbox("거래소/종목구분", exchanges)
+        is_krw = exchange in ["Upbit", "Bithumb", "Korbit", "KR Stock"]
+        
+        if exchange == "US Stock":
+            ticker_hint = "예: AAPL, TSLA, TLT"
+        elif exchange == "KR Stock":
+            ticker_hint = "예: 005930.KS (삼성전자)"
+        else:
+            ticker_hint = "예: BTC, ETH, SOL"
+        
+        c1, c2 = st.columns(2)
+        ticker = c1.text_input("종목 코드", placeholder=ticker_hint).upper()
+        qty = c2.number_input("수량", 0.0, step=0.01)
+        
+        step_val = 10000.0 if is_krw else 100.0
+        unit = "₩" if is_krw else "$"
+        avg = st.number_input(f"평단가 ({unit})", 0.0, step=step_val)
+        
+        # 스마트 목표가 가이드 (코인인 경우만)
+        if ticker and avg > 0 and "Stock" not in exchange:
+            info = get_coingecko_details(ticker)
+            if info:
+                ath_val = info['ath'] * (rate if is_krw else 1)
+                targets = calculate_smart_targets(avg, ath_val)
+                
+                st.markdown(f"""
+                <div class='target-guide-box'>
+                    <div class='guide-title'>🎯 목표가 추천 가이드</div>
+                    <div class='guide-row'><span class='guide-label'>📉 전고점 (ATH)</span> <span class='guide-val'>{targets['ATH (전고점)']:,.0f}</span></div>
+                    <div class='guide-row'><span class='guide-label'>🔢 심리적 저항선</span> <span class='guide-val'>{targets['라운드 피겨 (심리)']:,.0f}</span></div>
+                    <div class='guide-row'><span class='guide-label'>💰 수익 2배 (회수)</span> <span class='guide-val'>{targets['수익 2배 (원금회수)']:,.0f}</span></div>
+                    <div class='guide-row'><span class='guide-label'>🚀 불장 (Fib 1.618)</span> <span class='guide-val'>{targets['Fib 1.618 (불장)']:,.0f}</span></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        tgt = st.number_input("목표가", 0.0, step=step_val)
+        
+        if st.button("➕ 저장", use_container_width=True):
+            if ticker and qty > 0:
+                found = False
+                for p in st.session_state.portfolio:
+                    if p['ticker'] == ticker and p.get('exchange') == exchange:
+                        p['quantity'] = qty
+                        p['avg_price'] = avg
+                        p['target_price'] = tgt
+                        found = True
+                        break
+                if not found:
+                    st.session_state.portfolio.append({
+                        'ticker': ticker, 'quantity': qty, 'avg_price': avg,
+                        'target_price': tgt, 'exchange': exchange
+                    })
+                # Firebase 자동 저장
+                save_user_data(st.session_state.username)
+                st.rerun()
+
+    # 포트폴리오 목록
+    if st.session_state.portfolio:
+        st.sidebar.markdown("##### 📋 내 자산")
+        for i, p in enumerate(st.session_state.portfolio):
+            c1, c2 = st.sidebar.columns([4, 1])
+            ex = p.get('exchange', 'Binance')
+            icon = "🏢" if "Stock" in ex else "🪙"
+            c1.caption(f"{icon} [{ex[:6]}] {p['ticker']} ({p['quantity']})")
+            if c2.button("🗑️", key=f"del_{i}"):
+                st.session_state.portfolio.pop(i)
+                save_user_data(st.session_state.username)
+                st.rerun()
+                
+    st.sidebar.divider()
+    with st.sidebar.expander("🔑 API 키 설정"):
+        gemini_key = st.text_input("Gemini API Key", value=st.session_state.get("api_gemini", ""), type="password", key="gemini_key")
+        fred_key = st.text_input("FRED API Key", value=st.session_state.get("api_fred", ""), type="password", key="fred_key")
+        st.divider()
+        st.caption("🤖 AI 위원회용 (선택)")
+        openai_key = st.text_input("OpenAI API Key", value=st.session_state.get("api_openai", ""), type="password", key="openai_key")
+        claude_key = st.text_input("Claude API Key", value=st.session_state.get("api_claude", ""), type="password", key="claude_key")
+        grok_key = st.text_input("Grok API Key", value=st.session_state.get("api_grok", ""), type="password", key="grok_key")
+        
+        # API 키 세션에 저장
+        st.session_state.api_gemini = gemini_key
+        st.session_state.api_fred = fred_key
+        st.session_state.api_openai = openai_key
+        st.session_state.api_claude = claude_key
+        st.session_state.api_grok = grok_key
+    
+    # 텔레그램 알림 설정
+    with st.sidebar.expander("📢 텔레그램 알림 설정"):
+        st.caption("목표가 도달 시 텔레그램으로 알림을 받습니다.")
+        tg_enabled = st.checkbox("알림 활성화", value=st.session_state.telegram.get('enabled', False))
+        tg_token = st.text_input("Bot Token", value=st.session_state.telegram.get('bot_token', ''), type="password")
+        tg_chat = st.text_input("Chat ID", value=st.session_state.telegram.get('chat_id', ''))
+        
+        st.session_state.telegram = {'bot_token': tg_token, 'chat_id': tg_chat, 'enabled': tg_enabled}
+        
+        if tg_enabled and tg_token and tg_chat:
+            if st.button("📤 테스트 알림 보내기"):
+                if send_telegram_alert("✅ 크립토 인사이트 알림 테스트\n\n텔레그램 연동이 완료되었습니다!"):
+                    st.success("테스트 알림 전송 성공!")
+                else:
+                    st.error("전송 실패. Token/Chat ID를 확인하세요.")
+        
+        with st.expander("텔레그램 설정 가이드"):
+            st.markdown("""
+            1. **BotFather**에서 봇 생성: @BotFather 대화 → /newbot
+            2. **Bot Token** 복사: `110201543:AAHdqT...` 형식
+            3. **Chat ID** 확인: @userinfobot에 메시지 보내면 ID 확인 가능
+            """)
+    
+    return gemini_key, fred_key, auto_refresh, openai_key, claude_key, grok_key
+
+# -----------------------------------------------------------------------------
+# 탭 1: 대시보드
+# -----------------------------------------------------------------------------
+def render_dashboard_tab(gemini_key):
+    st.markdown("### 📊 내 자산 & 시장 현황")
+    rate = get_usd_krw_rate()
+    portfolio = st.session_state.portfolio
+    
+    if not portfolio: st.info("👈 사이드바에서 자산을 추가해주세요."); return
+
+    total_krw = 0; total_cost = 0; pie_data = []; table_data = []
+    
+    for p in portfolio:
+        cur_p, curr = get_market_price(p['ticker'], p.get('exchange', 'Binance'))
+        k_rate = rate if curr == "USD" else 1
+        val = p['quantity'] * cur_p * k_rate
+        cost = p['quantity'] * p['avg_price'] * k_rate
+        total_krw += val; total_cost += cost
+        pie_data.append({'Coin': p['ticker'], 'Value': val})
+        hit = (p['target_price'] > 0) and (cur_p >= p['target_price'])
+        table_data.append({"코인": p['ticker'], "거래소": p.get('exchange'), "수량": p['quantity'], 
+                           "평가금액": f"₩{val:,.0f}", "수익률": (val-cost)/cost*100 if cost>0 else 0, "_hit": hit})
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("총 자산 (KRW)", f"₩{total_krw:,.0f}")
+    pnl = total_krw - total_cost
+    k2.metric("총 수익률", f"{pnl/total_cost*100:+.2f}%", f"₩{pnl:+,.0f}" if total_cost>0 else "0")
+    
+    btc_k = get_market_price("BTC", "Upbit")[0]
+    btc_u = get_market_price("BTC", "Binance")[0]
+    kimchi = ((btc_k / (btc_u * rate)) - 1) * 100 if btc_u > 0 else 0
+    with k3:
+        st.markdown(f"**🌶️ 김치 프리미엄**: <span class='kimchi-badge k-blue'>{kimchi:+.2f}%</span>", unsafe_allow_html=True)
+
+    st.divider()
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if pie_data: st.plotly_chart(px.pie(pie_data, values='Value', names='Coin', hole=0.4).update_layout(margin=dict(t=0,b=0,l=0,r=0), height=200), use_container_width=True)
+    with c2:
+        if table_data:
+            df = pd.DataFrame(table_data)
+            st.dataframe(df.style.apply(lambda x: ['background-color: #fef3c7'] * len(x) if x['_hit'] else [''] * len(x), axis=1), 
+                         column_config={"_hit": None}, use_container_width=True, height=200)
+
+    st.divider()
+    st.markdown("### 🧠 코인 인텔리전스 (AI & Data)")
+    selected = st.selectbox("분석할 코인", list(set([p['ticker'] for p in portfolio])))
+    
+    if selected:
+        with st.spinner(f'{selected} 데이터 및 뉴스 로딩 중...'):
+            info = get_coingecko_details(selected)
+            w_df = get_weekly_ohlcv(selected, 60)
+            news = get_translated_news([selected, f"{selected} coin"], gemini_key)
+            rate = get_usd_krw_rate()
+            
+            if info and w_df is not None:
+                col_info, col_tech, col_news = st.columns([1.2, 1, 1])
+                
+                with col_info:
+                    st.markdown(f"#### ℹ️ {info['name']} 정보")
+                    
+                    # 시총, 순위
+                    m1, m2 = st.columns(2)
+                    market_cap_krw = info['market_cap'] * rate
+                    m1.metric("시총 순위", f"#{info['rank']}")
+                    m2.metric("시가총액", f"₩{market_cap_krw/1e12:,.1f}조")
+                    
+                    # 발행량
+                    m3, m4 = st.columns(2)
+                    total_supply = info['total_supply'] or 0
+                    circ_supply = info['circulating_supply'] or 0
+                    m3.metric("총 발행량", f"{total_supply/1e6:,.1f}M" if total_supply else "무제한")
+                    m4.metric("유통량", f"{circ_supply/1e6:,.1f}M")
+                    
+                    # 최고가/최저가 (원화)
+                    m5, m6 = st.columns(2)
+                    ath_krw = info['ath'] * rate
+                    atl_krw = info['atl'] * rate
+                    m5.metric("최고가 (ATH)", f"₩{ath_krw:,.0f}", f"{info['ath_change']:+.1f}%")
+                    m6.metric("최저가 (ATL)", f"₩{atl_krw:,.0f}", f"{info['atl_change']:+.1f}%")
+                    
+                    st.markdown("---")
+                    st.markdown("**📝 코인 설명**")
+                    final_desc = clean_and_translate_desc(info['desc'], gemini_key)
+                    st.markdown(f"<div class='scroll-box'>{final_desc}</div>", unsafe_allow_html=True)
+
+                with col_tech:
+                    st.markdown("#### 📊 기술적 전망")
+                    outlook = analyze_technical(w_df)
+                    color = "green" if "매수" in outlook['signal'] else "red" if "매도" in outlook['signal'] else "gray"
+                    st.markdown(f"##### 시그널: <span style='color:{color}'>{outlook['signal']}</span>", unsafe_allow_html=True)
+                    
+                    rsi = RSIIndicator(w_df['c'], 14).rsi().tail(12)
+                    fig = go.Figure(go.Scatter(x=rsi.index, y=rsi.values, mode='lines+markers', line=dict(color='#6366f1')))
+                    fig.add_hline(y=70, line_dash="dot", line_color="red"); fig.add_hline(y=30, line_dash="dot", line_color="green")
+                    st.plotly_chart(fig.update_layout(height=100, margin=dict(l=0,r=0,t=0,b=0), yaxis=dict(showgrid=False), xaxis=dict(showgrid=False)), use_container_width=True)
+                    for s in outlook['summary']: st.caption(f"- {s}")
+
+                with col_news:
+                    st.markdown("#### 📰 관련 뉴스 (AI 번역)")
+                    if news:
+                        for n in news[:5]:
+                            lang_badge = "🇰🇷" if n.get('lang') == 'ko' else "🇺🇸→🇰🇷" if gemini_key else "🇺🇸"
+                            st.markdown(f"<div class='news-card'><div class='news-source'>{lang_badge} {n['source']}</div><a href='{n['link']}' target='_blank' class='news-title'>{n['title']}</a></div>", unsafe_allow_html=True)
+                    else: st.info("관련 뉴스가 없습니다.")
+                
+                if gemini_key:
+                     if st.button("✨ Gemini 심층 리포트 생성"):
+                        news_context = "\n".join([n['title'] for n in news[:5]])
+                        try:
+                            genai.configure(api_key=gemini_key)
+                            prompt = f"""
+                            암호화폐 전문가 {selected} 분석:
+                            [가격] ${w_df['c'].iloc[-1]:,.2f}, Rank #{info['rank']}
+                            [기술] {", ".join(outlook['summary'])}
+                            [뉴스] {news_context}
+                            1. 호재/악재 판단 2. 단기 전망 및 이유 3. 한국어 답변
+                            """
+                            res = genai.GenerativeModel('gemini-pro').generate_content(prompt).text
+                            st.markdown(f"<div class='ai-box'>{res}</div>", unsafe_allow_html=True)
+                        except: st.error("AI 분석 중 오류가 발생했습니다.")
+            else:
+                st.warning("데이터를 불러올 수 없습니다. (API 제한 등)")
+
+# -----------------------------------------------------------------------------
+# 탭 2: 사이클 & 매크로
+# -----------------------------------------------------------------------------
+def render_macro_tab(fred_key):
+    st.markdown("### 🔮 시장 매크로 & 사이클")
+    
+    # DXY
+    dxy_val, dxy_chg = get_dxy_index()
+    c0, c_dum = st.columns([1, 3])
+    with c0:
+        st.markdown("#### 💵 달러 인덱스 (DXY)")
+        st.metric("DXY", f"{dxy_val:.2f}", f"{dxy_chg:+.2f}%", delta_color="inverse")
+        st.caption("달러 가치가 오르면 비트코인은 주로 하락합니다.")
+    
+    st.divider()
+    
+    # Pi Cycle Top Indicator
+    st.markdown("#### 1. Pi Cycle Top Indicator")
+    with st.expander("ℹ️ Pi Cycle 지표 해석 가이드"):
+        st.markdown("""
+        **비트코인 고점 탐지기**:
+        - <span style='color:orange'>**111일 이동평균선**</span>이 <span style='color:green'>**350일 이동평균선(x2)**</span>을 떫고 올라갈 때(골든크로스)가 역사적 고점이었습니다.
+        - 현재 두 선이 만난다면 **강력한 매도 신호**로 간주됩니다.
+        """, unsafe_allow_html=True)
+    
+    btc_df = get_daily_ohlcv("BTC", 1000)
+    if btc_df is not None and len(btc_df) > 350:
+        ma111 = SMAIndicator(btc_df['c'], 111).sma_indicator()
+        ma350x2 = SMAIndicator(btc_df['c'], 350).sma_indicator() * 2
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=btc_df.index, y=btc_df['c'], name='Price', line=dict(color='gray', width=1)))
+        fig.add_trace(go.Scatter(x=btc_df.index, y=ma111, name='111 DMA', line=dict(color='orange', width=2)))
+        fig.add_trace(go.Scatter(x=btc_df.index, y=ma350x2, name='350 DMA x2', line=dict(color='green', width=2)))
+        st.plotly_chart(fig.update_layout(height=350, margin=dict(l=0,r=0,t=0,b=0), hovermode="x unified"), use_container_width=True)
+    else:
+        st.info("데이터 불러오는 중...")
+    
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 😨 공포 & 탐욕 지수")
+        fng = get_fear_greed()
+        fig = go.Figure(go.Indicator(mode="gauge+number", value=fng, 
+            gauge={'axis': {'range': [0, 100]}, 'steps': [{'range': [0, 25], 'color': "#ef4444"}, {'range': [75, 100], 'color': "#22c55e"}]}))
+        st.plotly_chart(fig.update_layout(height=250), use_container_width=True)
+        with st.expander("지표 해석"):
+            st.markdown("- **0~25 (Extreme Fear)**: <span style='color:red'>매수 기회</span> (공포에 사라)", unsafe_allow_html=True)
+            st.markdown("- **75~100 (Extreme Greed)**: <span style='color:green'>매도 고려</span> (탐욕에 팜아라)", unsafe_allow_html=True)
+            
+    with c2:
+        st.markdown("#### 🚀 알트코인 시즌 지수")
+        dom = get_btc_dominance()
+        st.metric("BTC Dominance", f"{dom:.1f}%")
+        st.progress(min(dom/100, 1.0))
+        if dom < 40: st.success("🎉 알트코인 시즌 (매수 기회)")
+        elif dom > 60: st.warning("💎 비트코인 독주장 (알트 주의)")
+        else: st.info("⚖️ 중립/순환매 장세")
+        with st.expander("도미넌스란?"):
+            st.write("전체 코인 시총 중 비트코인이 차지하는 비율입니다. 낮을수록 알트코인 강세장을 의미합니다.")
+
+    st.divider()
+    c3, c4, c5 = st.columns(3)
+    with c3:
+        st.markdown("#### 📉 MVRV Z-Score")
+        mvrv = st.number_input("점수 (Manual)", value=st.session_state.manual_data['mvrv_zscore'])
+        st.session_state.manual_data['mvrv_zscore'] = mvrv
+        if mvrv >= 7: st.error("🚨 고점 (Sell)")
+        elif mvrv <= 0: st.success("✅ 저점 (Buy)")
+        else: st.info("평가 적정")
+        with st.expander("MVRV란?"):
+            st.write("시장 가치와 실현 가치의 비율입니다. 0 이하는 저평가(매수), 7 이상은 고평가(매도) 구간입니다.")
+        
+    with c4:
+        st.markdown("#### 📱 코인베이스 앱 순위")
+        st.markdown('<a href="https://x.com/COINAppRankBot" target="_blank" class="twitter-btn">🐦 순위 확인</a>', unsafe_allow_html=True)
+        rank = st.number_input("Rank (Manual)", value=st.session_state.manual_data['coinbase_rank'])
+        st.session_state.manual_data['coinbase_rank'] = rank
+        if rank <= 10: st.error("🚨 과열 (Top 10)")
+        else: st.success("✅ 안정권")
+        with st.expander("인간 지표"):
+            st.write("앱스토어 1위는 일반 대중의 광기를 의미합니다. 이때가 단기 고점일 확률이 높습니다.")
+
+    with c5:
+        st.markdown("#### 🏭 ISM 제조업 지수")
+        ism = st.session_state.manual_data['ism_pmi']
+        if fred_key and FRED_AVAILABLE:
+            try:
+                data = Fred(api_key=fred_key).get_series('ISM/MAN_MANUFACTURING')
+                if not data.empty: ism = data.iloc[-1]
+            except: pass
+        st.metric("Index", f"{ism:.1f}")
+        st.progress(min(ism/100, 1.0))
+        if ism < 50: st.caption("📉 경기 침체 가능성")
+        else: st.caption("📈 경기 확장세")
+        with st.expander("경기 지표 해석"):
+            st.write("50 이상은 경제 확장, 50 이하는 수축을 의미합니다. 침체기엔 위험자산 회피 성향이 강해질 수 있습니다.")
+
+# -----------------------------------------------------------------------------
+# 탭 3: 심층 분석
+# -----------------------------------------------------------------------------
+def render_deep_tab():
+    st.markdown("### 🔎 심층 분석 (고래 추적)")
+    try:
+        if CCXT_AVAILABLE:
+            trades = ccxt.binance().fetch_trades('BTC/USDT', limit=50)
+            large = [t for t in trades if (t['price']*t['amount']) > 50000]
+            if large:
+                df = pd.DataFrame(large)
+                df['time'] = pd.to_datetime(df['timestamp'], unit='ms')
+                st.dataframe(df[['time', 'side', 'price', 'amount']].sort_values('time', ascending=False), use_container_width=True)
+            else: st.info("최근 대량 체결 내역 없음")
+    except: st.warning("데이터 로딩 실패")
+    
+    st.divider()
+    st.markdown("### 📊 비트코인 vs 나스닥 상관관계 (버핏 지표)")
+    st.caption("💡 비트코인이 증시(나스닥)와 얼마나 비슷하게 움직이는지 보여줍니다. (1.0 = 동일, -1.0 = 반대)")
+    
+    try:
+        if YFINANCE_AVAILABLE:
+            end = datetime.now()
+            start = end - timedelta(days=365)
+            btc = yf.download("BTC-USD", start=start, end=end, progress=False)['Close']
+            nasdaq = yf.download("^IXIC", start=start, end=end, progress=False)['Close']
+            
+            # 데이터 인덱스 정리 (타임존 제거)
+            btc.index = btc.index.tz_localize(None)
+            nasdaq.index = nasdaq.index.tz_localize(None)
+            
+            # 결합 및 상관계수 계산
+            df_corr = pd.concat([btc, nasdaq], axis=1).dropna()
+            df_corr.columns = ['BTC', 'NASDAQ']
+            
+            corr = df_corr['BTC'].corr(df_corr['NASDAQ'])
+            
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                st.metric("상관계수 (1년)", f"{corr:.2f}")
+                if corr > 0.7: st.error("🚨 동조화 심화 (커플링)")
+                elif corr < 0.3: st.success("✅ 탈동조화 (디커플링)")
+                else: st.info("⚖️ 일반적 흐름")
+            with col2:
+                # 정규화하여 추이 비교
+                df_norm = df_corr / df_corr.iloc[0]
+                st.line_chart(df_norm)
+            
+            with st.expander("버핏 지표 해석"):
+                st.markdown("""
+                - **상관계수 0.7 이상**: 비트코인이 주식처럼 움직임 (매크로 영향 큼)
+                - **상관계수 0.3 이하**: 비트코인이 독립 자산으로 움직임
+                - **투자 전략**: 디커플링 시 포트폴리오 분산 효과가 높아집니다.
+                """)
+    except Exception as e:
+        st.error(f"상관관계 분석 실패: {e}")
+
+# -----------------------------------------------------------------------------
+# 탭 4: 뉴스 & 알림
+# -----------------------------------------------------------------------------
+def render_news_tab(gemini_key):
+    st.markdown("### 📰 뉴스룸 & 알림")
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.subheader("실시간 뉴스 (한국어)")
+        st.caption("💡 Google News 한국어 RSS + 주요 암호화폐 미디어")
+        news = get_translated_news([], gemini_key)
+        if news:
+            for n in news:
+                badge = "🇰🇷" if n.get('lang') == 'ko' else "🌐"
+                st.markdown(f"**[{badge} {n['source']}]** [{n['title']}]({n['link']})")
+                st.divider()
+        else:
+            st.info("뉴스를 불러올 수 없습니다.")
+    with c2:
+        st.subheader("🚨 알림 센터")
+        signals = []
+        if st.session_state.manual_data['mvrv_zscore'] >= 7: signals.append("🔥 MVRV 고평가")
+        if signals: st.error("\n".join(signals))
+        else: st.success("특이사항 없음")
+
+# -----------------------------------------------------------------------------
+# 탭 5: 도구
+# -----------------------------------------------------------------------------
+def render_tools_tab():
+    st.markdown("### 🧮 FOMO 계산기")
+    try:
+        c1, c2, c3 = st.columns(3)
+        coin = c1.selectbox("코인", ["BTC-USD", "ETH-USD"])
+        date = c2.date_input("날짜", datetime.now()-timedelta(days=365))
+        amt = c3.number_input("투자금(만원)", 100)
+        
+        if st.button("계산하기"):
+            if YFINANCE_AVAILABLE:
+                df = yf.download(coin, start=date, end=date+timedelta(days=3), progress=False)
+                if not df.empty:
+                    past = float(df['Close'].iloc[0])
+                    curr = float(yf.Ticker(coin).history(period="1d")['Close'].iloc[-1])
+                    profit = (amt/past*curr) - amt
+                    st.success(f"현재 가치: {amt+profit:,.0f}만원 ({profit/amt*100:+.1f}%)")
+                else: st.error("해당 날짜 데이터 없음")
+    except Exception as e: st.error(f"오류 발생: {e}")
+
+# -----------------------------------------------------------------------------
+# 탭: AI 투자 위원회 (V7.4)
+# -----------------------------------------------------------------------------
+def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
+    st.markdown("### 🤖 AI 투자 위원회 (Cross-Check)")
+    st.caption("여러 AI 모델들이 각자의 페르소나로 시장을 분석하고 투표합니다.")
+
+    if not st.session_state.portfolio:
+        st.info("👈 포트폴리오에 자산을 먼저 추가해주세요.")
+        return
+        
+    coins = list(set([p['ticker'] for p in st.session_state.portfolio if "Stock" not in p.get('exchange', '')]))
+    if not coins:
+        st.warning("분석할 코인이 없습니다.")
+        return
+
+    target_coin = st.selectbox("📋 위원회 안건 상정 (코인 선택)", coins, key="council_coin")
+    
+    # 데이터 수집
+    w_df = get_weekly_ohlcv(target_coin, 60)
+    info = get_coingecko_details(target_coin)
+    tech = analyze_technical(w_df) if w_df is not None else {}
+    news = get_translated_news([target_coin], gemini_key)
+    rate = get_usd_krw_rate()
+    cur_price, _ = get_market_price(target_coin, 'Binance')
+    
+    # 프롬프트 구성
+    context_prompt = f"""
+    [분석 대상] {target_coin}
+    - 현재가: ${cur_price:,.2f} (₩{cur_price * rate:,.0f})
+    - 마켓캡 순위: #{info['rank'] if info else 'N/A'}
+    - 기술적 신호: {tech.get('signal', 'N/A')} (Score: {tech.get('score', 0)})
+    - 최근 뉴스: {[n['title'] for n in news[:3]]}
+    - MVRV Z-Score: {st.session_state.manual_data['mvrv_zscore']}
+    
+    위 데이터를 바탕으로 투자 의견(매수/매도/관망)을 제시하고, 
+    너의 역할(Persona)에 맞춰서 그 이유를 3줄 이내로 핵심만 한국어로 설명해.
+    마지막에 반드시 [결론: 매수/매도/관망] 형태로 표시해.
+    """
+
+    # 위원회 현황
+    st.markdown("#### 👥 위원회 구성")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🧠 Gemini", "📰 뉴스앵커" if gemini_key else "❌ 미설정")
+    c2.metric("💼 ChatGPT", "🏦 펀드매니저" if openai_key else "❌ 미설정")
+    c3.metric("📊 Claude", "📈 데이터분석" if claude_key else "❌ 미설정")
+    c4.metric("🚀 Grok", "🐋 공격투자" if grok_key else "❌ 미설정")
+
+    if st.button("🗳️ 위원회 소집 및 투표 시작", type="primary", use_container_width=True):
+        if not (gemini_key or openai_key or claude_key or grok_key):
+            st.error("⚠️ 최소 1개 이상의 API 키가 필요합니다. 사이드바에서 설정하세요.")
+            return
+
+        with st.spinner("🔄 AI 위원들이 데이터를 분석하고 투표 중입니다..."):
+            opinions = {}
+            
+            # 1. Gemini (뉴스/매크로)
+            if gemini_key and GENAI_AVAILABLE:
+                try:
+                    genai.configure(api_key=gemini_key)
+                    g_prompt = "당신은 거시경제를 분석하는 뉴스 앵커입니다. 최신 뉴스와 거시 경제 관점에서 분석하세요.\n\n" + context_prompt
+                    model = genai.GenerativeModel(AI_MODELS['GOOGLE']) 
+                    opinions['📰 Gemini (뉴스앵커)'] = model.generate_content(g_prompt).text
+                except Exception as e: 
+                    opinions['📰 Gemini'] = f"❌ 오류: {e}"
+            
+            # 2. ChatGPT (보수적 펀드매니저)
+            if openai_key:
+                opinions['💼 ChatGPT (펀드매니저)'] = ask_chatgpt(openai_key, context_prompt)
+                
+            # 3. Claude (데이터 분석가)
+            if claude_key:
+                opinions['📊 Claude (데이터분석)'] = ask_claude(claude_key, context_prompt)
+                
+            # 4. Grok (공격적 투자자)
+            if grok_key:
+                opinions['🚀 Grok (공격투자)'] = ask_grok(grok_key, context_prompt)
+
+        # 결과 표시
+        st.divider()
+        st.markdown("#### 💬 위원회 검토 의견서")
+        
+        buy_vote = 0
+        sell_vote = 0
+        hold_vote = 0
+        
+        for name, text in opinions.items():
+            # 투표 집계
+            text_lower = text.lower()
+            if "매수" in text or "buy" in text_lower: buy_vote += 1
+            elif "매도" in text or "sell" in text_lower: sell_vote += 1
+            else: hold_vote += 1
+            
+            # 카드 UI
+            st.markdown(f"""
+            <div style="background: white; padding: 15px; border-radius: 10px; border: 1px solid #e5e7eb; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                <div style="font-weight: bold; color: #2563eb; margin-bottom: 8px; font-size: 1.1em;">{name}</div>
+                <div style="font-size: 0.95em; line-height: 1.6; color: #374151;">{text}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        # 최종 결론
+        total = len(opinions)
+        result_color = "#6b7280"
+        result_text = "⚪ 판단 보류 (Neutral)"
+        
+        if buy_vote > sell_vote and buy_vote > hold_vote: 
+            result_text = "🟢 매수 우위 (Buy Consensus)"
+            result_color = "#22c55e"
+        elif sell_vote > buy_vote and sell_vote > hold_vote:
+            result_text = "🔴 매도 우위 (Sell Consensus)"
+            result_color = "#ef4444"
+        elif hold_vote > buy_vote:
+            result_text = "🟡 관망 우위 (Hold Consensus)"
+            result_color = "#eab308"
+            
+        st.markdown("---")
+        st.markdown(f"### 📢 위원회 최종 결론: <span style='color:{result_color}; font-weight:bold;'>{result_text}</span>", unsafe_allow_html=True)
+        
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("🟢 매수", f"{buy_vote}표")
+        col_v2.metric("🔴 매도", f"{sell_vote}표")
+        col_v3.metric("🟡 관망", f"{hold_vote}표")
+        
+        st.caption(f"총 {total}명 위원 참여")
+
+
+# -----------------------------------------------------------------------------
+# 탭: 매도 전략 (Smart Exit Planner) - V7.3 Macro & Tech
+# -----------------------------------------------------------------------------
+def render_exit_strategy_tab():
+    st.markdown("### 📉 종합 매도 타이밍 (Macro & Tech)")
+    st.caption("기술적 지표뿐만 아니라 **거시적 이벤트(재료)**를 종합하여 최적의 매도 시점을 판단합니다.")
+
+    if not st.session_state.portfolio:
+        st.info("👈 사이드바에서 코인 자산을 추가해주세요.")
+        return
+
+    coin_list = [p['ticker'] for p in st.session_state.portfolio if "Stock" not in p.get('exchange', '')]
+    if not coin_list:
+        st.warning("매도 전략을 세울 코인 자산이 없습니다.")
+        return
+
+    # -------------------------------------------------------------------------
+    # 1. 매크로 이벤트 체크리스트
+    # -------------------------------------------------------------------------
+    st.markdown("#### 1️⃣ 매크로 이벤트 반영 (Market Euphoria)")
+    st.info("🔔 시장에 큰 영향을 주는 초대형 뉴스가 확정되었나요? 직접 체크해주세요.")
+
+    col_evt1, col_evt2 = st.columns(2)
+    
+    with col_evt1:
+        check_clarity = st.checkbox("🇺🇸 CLARITY 법안(규제 명확화) 통과", help="법적 리스크 해소로 기관 자금 유입 본격화")
+        check_trump = st.checkbox("🏛️ 트럼프 '비트코인 전략 비축' 공식 발표", help="국가 차원 매입, 슈퍼 사이클 시작")
+    
+    with col_evt2:
+        check_ripple = st.checkbox("💧 리플(XRP) IPO 확정", help="불장 후반부 신호")
+        check_spacex = st.checkbox("🚀 스페이스X IPO 확정", help="금융 시장 유동성 정점 신호")
+
+    # 이벤트 점수 계산
+    macro_score = 0
+    macro_reasons = []
+    if check_clarity: macro_score += 10; macro_reasons.append("🇺🇸 CLARITY 법안 통과")
+    if check_trump: macro_score += 20; macro_reasons.append("🏛️ 트럼프 비축 발표 (슈퍼 사이클)")
+    if check_ripple: macro_score += 15; macro_reasons.append("💧 리플 IPO (유동성 피크)")
+    if check_spacex: macro_score += 15; macro_reasons.append("🚀 스페이스X IPO")
+
+    # -------------------------------------------------------------------------
+    # 2. 종합 매도 시그널 (Euphoria Index)
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.markdown("#### 2️⃣ 종합 매도 시그널 (Euphoria Index)")
+    
+    # 기술적 점수 계산 (BTC 기준)
+    w_df = get_weekly_ohlcv("BTC", 60)
+    mvrv = st.session_state.manual_data['mvrv_zscore']
+    fng = get_fear_greed()
+    
+    tech_score = 0
+    tech_reasons = []
+    
+    # RSI 점수 (0~40점)
+    rsi = 50
+    if w_df is not None and TA_AVAILABLE:
+        rsi = RSIIndicator(w_df['c'], 14).rsi().iloc[-1]
+        if rsi >= 80: tech_score += 40; tech_reasons.append(f"🔥 주봉 RSI {rsi:.0f} (초과열)")
+        elif rsi >= 70: tech_score += 30; tech_reasons.append(f"🔥 주봉 RSI {rsi:.0f} (과열)")
+        elif rsi >= 60: tech_score += 10
+        
+    # MVRV 점수 (0~30점)
+    if mvrv >= 7.0: tech_score += 30; tech_reasons.append("📉 MVRV 7.0+ (역사적 고점)")
+    elif mvrv >= 3.5: tech_score += 20; tech_reasons.append("📉 MVRV 3.5+ (고평가)")
+    
+    # 공포탐욕 점수 (0~20점)
+    if fng >= 90: tech_score += 20; tech_reasons.append(f"😱 극단적 탐욕 ({fng})")
+    elif fng >= 75: tech_score += 10; tech_reasons.append(f"😨 탐욕 단계 ({fng})")
+    
+    # 종합 점수
+    total_score = min(tech_score + macro_score, 100)
+    
+    # 게이지 차트
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number+delta",
+        value=total_score,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': "종합 매도 권장 지수", 'font': {'size': 20}},
+        delta={'reference': 50, 'increasing': {'color': "red"}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickwidth': 1},
+            'bar': {'color': "darkblue"},
+            'steps': [
+                {'range': [0, 40], 'color': "#22c55e"},
+                {'range': [40, 70], 'color': "#eab308"},
+                {'range': [70, 90], 'color': "#f97316"},
+                {'range': [90, 100], 'color': "#ef4444"}
+            ],
+            'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': total_score}
+        }
+    ))
+    fig.update_layout(height=280, margin=dict(t=30, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 점수 분석 및 AI 전략 제안
+    c_res, c_act = st.columns([2, 1])
+    with c_res:
+        st.write("##### 📊 점수 분석")
+        all_reasons = tech_reasons + macro_reasons
+        if all_reasons:
+            for r in all_reasons: st.caption(f"• {r}")
+        else:
+            st.caption("• 특이 신호 없음")
+        
+    with c_act:
+        st.write("##### 🤖 AI 전략 제안")
+        if total_score >= 85:
+            st.error("🚨 **적극 매도**\n\n기술적 과열 + 매크로 호재. 현금 비중 70%↑ 권장")
+        elif total_score >= 60:
+            st.warning("⚠️ **분할 매도**\n\n시장 과열 징조. 상승마다 10~20% 청산")
+        else:
+            st.success("✅ **보유 유지**\n\n아직 과열되지 않음. 추세 유지")
+
+    st.divider()
+    
+    # -------------------------------------------------------------------------
+    # 3. 개별 코인 분할 매도 설정
+    # -------------------------------------------------------------------------
+    st.markdown("#### 3️⃣ 개별 코인 분할 매도 설정")
+    
+    selected_coin = st.selectbox("전략을 적용할 코인", coin_list)
+    target_asset = next((p for p in st.session_state.portfolio if p['ticker'] == selected_coin), None)
+    current_qty = target_asset['quantity']
+    avg_price = target_asset['avg_price']
+    
+    cur_price, currency = get_market_price(selected_coin, target_asset.get('exchange', 'Binance'))
+    rate = get_usd_krw_rate()
+    k_rate = rate if currency == "USD" else 1
+    
+    c_set1, c_set2 = st.columns([1, 2])
+    with c_set1:
+        steps = st.radio("분할 횟수", [3, 4, 5], horizontal=True, key="exit_steps")
+        st.info(f"보유: **{current_qty:,.4f} {selected_coin}**")
+        st.caption(f"현재가: ₩{cur_price * k_rate:,.0f}")
+    
+    with c_set2:
+        # 슈퍼 사이클 목표가 상향
+        boost_price = 1.0
+        if check_trump or check_clarity:
+            st.caption("✨ **슈퍼 사이클 감지**: 매크로 호재 반영하여 목표가 상향?")
+            if st.toggle("목표가 +20% 상향", value=False, key="boost_toggle"):
+                boost_price = 1.2
+                st.success("목표가가 20% 상향 조정됩니다.")
+
+    # 매도 계획 입력
+    exit_plan = []
+    total_percent = 0
+    total_expected_krw = 0
+    
+    st.markdown("##### 📝 구간별 목표가 및 비중")
+    
+    for i in range(1, steps + 1):
+        col_price, col_pct, col_result = st.columns([1.5, 1, 2])
+        
+        with col_price:
+            default_price = (cur_price * k_rate) * (1 + (0.25 * i)) * boost_price
+            target_p = st.number_input(f"{i}차 (₩)", value=float(int(default_price)), step=10000.0, key=f"exit_v3_p_{i}")
+            
+        with col_pct:
+            default_pct = 100 // steps
+            if i == steps: default_pct = 100 - (default_pct * (steps - 1))
+            target_pct = st.number_input(f"비중%", value=default_pct, min_value=0, max_value=100, key=f"exit_v3_pct_{i}")
+            total_percent += target_pct
+            
+        with col_result:
+            sell_qty = current_qty * (target_pct / 100)
+            sell_amt = sell_qty * target_p
+            total_expected_krw += sell_amt
+            
+            cur_price_krw = cur_price * k_rate
+            status = "✅" if cur_price_krw >= target_p else "⏳"
+            
+            st.markdown(f"<div style='margin-top:20px;font-size:0.9em;'>{sell_qty:,.4f}개 / ₩{sell_amt:,.0f} {status}</div>", unsafe_allow_html=True)
+            
+        exit_plan.append({"차수": f"{i}차", "목표가": target_p, "비중": target_pct, "매도수량": sell_qty, "예상금액": sell_amt})
+
+    st.divider()
+    
+    # 최종 결과
+    if total_percent != 100:
+        st.error(f"⚠️ 비중 합계: {total_percent}% (100%가 되어야 함)")
+    else:
+        total_cost_krw = current_qty * avg_price * k_rate
+        expected_profit = total_expected_krw - total_cost_krw
+        expected_roi = (expected_profit / total_cost_krw * 100) if total_cost_krw > 0 else 0
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("총 매도 예상", f"₩{total_expected_krw:,.0f}")
+        m2.metric("예상 순수익", f"₩{expected_profit:+,.0f}")
+        m3.metric("예상 ROI", f"{expected_roi:+.1f}%")
+        
+        df_plan = pd.DataFrame(exit_plan)
+        fig = px.bar(df_plan, x='차수', y='예상금액', text='목표가', title=f"{selected_coin} 분할 매도 계획")
+        fig.update_traces(texttemplate='₩%{text:,.0f}', textposition='outside')
+        fig.update_layout(height=280, margin=dict(t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# 탭: 헤지 전략 (V7.0)
+# -----------------------------------------------------------------------------
+def render_hedge_tab():
+    st.markdown("### 🛡️ 현물 헤지 전략 (Safe Haven)")
+    st.caption("비트코인(BTC)과 **[추천 안전자산 + 내 보유 주식]** 간의 상관관계를 분석합니다.")
+    
+    # 내 포트폴리오에서 주식 티커 추출
+    my_stocks = [p['ticker'] for p in st.session_state.portfolio if "Stock" in p.get('exchange', '')]
+    
+    norm_df, corr_data = get_hedge_data(user_stocks=my_stocks)
+    
+    if norm_df is not None and corr_data is not None:
+        st.markdown("#### 📉 최근 6개월 수익률 비교")
+        st.plotly_chart(px.line(norm_df, x=norm_df.index, y=norm_df.columns).update_layout(height=350, hovermode="x unified"), use_container_width=True)
+        
+        st.divider()
+        st.markdown("#### 🔗 비트코인과의 상관관계 (낮을수록 좋음)")
+        c1, c2 = st.columns([2, 1])
+        with c1: 
+            fig = px.bar(x=corr_data.values, y=corr_data.index, orientation='h', labels={'x':'상관계수', 'y':'자산'})
+            fig.update_traces(marker_color=['#22c55e' if v < 0.3 else '#f59e0b' if v < 0.6 else '#ef4444' for v in corr_data.values])
+            st.plotly_chart(fig.update_layout(height=250), use_container_width=True)
+        with c2:
+            best = corr_data.idxmin()
+            st.success(f"🏆 베스트 헤지 자산:\n\n**{best}**\n\n(상관계수: {corr_data.min():.2f})")
+            st.info("상관계수가 낮거나 음수(-)여야 코인 하락 시 방어 효과가 큽니다.")
+            if my_stocks: 
+                st.caption(f"※ 분석에 포함된 내 주식: {', '.join(my_stocks)}")
+        
+        with st.expander("💡 헤지 전략 가이드"):
+            st.markdown("""
+            - **TLT (미국채)**: 금리 하락기에 강함, 경기침체 시 안전자산
+            - **GLD (금)**: 인플레이션 헤지, 달러 약세 시 상승
+            - **SCHD (배당주)**: 안정적 현금흐름, 하락장에도 배당 수령
+            - **VOO (S&P500)**: 시장 전체에 분산 투자
+            - **내 주식(My)**: 본인이 추가한 주식의 BTC와의 상관관계 확인
+            """)
+    else: 
+        st.warning("데이터 로딩 실패 (Yahoo Finance 연결 확인)")
+        st.info("💡 주식을 추가하려면 사이드바에서 'US Stock' 또는 'KR Stock'을 선택하세요.")
+
+# -----------------------------------------------------------------------------
+# 탭 6: 리밸런싱 전략 (V7.1 개선)
+# -----------------------------------------------------------------------------
+def render_rebalance_tab():
+    st.markdown("### ⚖️ 포트폴리오 리밸런싱 (Rebalancing)")
+    st.caption("설정한 목표 비중에 맞춰 자산을 매수/매도하여 포트폴리오 균형을 맞춥니다.")
+
+    # 1. 포트폴리오 데이터 준비
+    if not st.session_state.portfolio:
+        st.info("👈 사이드바에서 먼저 자산을 추가해주세요.")
+        return
+
+    data_list = []
+    rate = get_usd_krw_rate()
+    total_value_krw = 0
+
+    # 현재 가치 계산
+    for p in st.session_state.portfolio:
+        ticker = p['ticker']
+        qty = p['quantity']
+        exchange = p.get('exchange', 'Binance')
+        
+        cur_p, curr = get_market_price(ticker, exchange)
+        k_rate = rate if curr == "USD" else 1
+        val_krw = qty * cur_p * k_rate
+        total_value_krw += val_krw
+        
+        target = p.get('target_percent', 0.0)
+        
+        data_list.append({
+            "티커": ticker,
+            "거래소": exchange,
+            "보유수량": qty,
+            "현재가(₩)": val_krw / qty if qty > 0 else 0,
+            "평가금액(₩)": val_krw,
+            "현재비중(%)": 0.0,
+            "목표비중(%)": target
+        })
+
+    df = pd.DataFrame(data_list)
+    
+    if total_value_krw > 0:
+        df["현재비중(%)"] = (df["평가금액(₩)"] / total_value_krw) * 100
+    else:
+        st.warning("포트폴리오 평가금액이 0입니다.")
+        return
+    
+    # -------------------------------------------------------------------------
+    # 2. 목표 비중 설정 (데이터 에디터)
+    # -------------------------------------------------------------------------
+    st.markdown("#### 1️⃣ 목표 비중 설정")
+    st.caption("아래 표에서 **'목표비중(%)'** 값을 직접 수정하세요. (합계가 100%가 되도록 설정)")
+
+    edited_df = st.data_editor(
+        df[["티커", "현재비중(%)", "목표비중(%)"]],
+        column_config={
+            "현재비중(%)": st.column_config.NumberColumn(format="%.1f%%", disabled=True),
+            "목표비중(%)": st.column_config.NumberColumn(format="%.1f%%", min_value=0, max_value=100, step=1)
+        },
+        use_container_width=True,
+        hide_index=True,
+        key="rebalance_editor"
+    )
+
+    # 목표 비중 합계 검증
+    total_target = edited_df["목표비중(%)"].sum()
+    c1, c2 = st.columns(2)
+    c1.metric("현재 총 자산", f"₩{total_value_krw:,.0f}")
+    
+    if abs(total_target - 100) > 0.1:
+        c2.metric("목표 비중 합계", f"{total_target:.1f}%", delta=f"{100-total_target:.1f}% 차이", delta_color="inverse")
+        st.warning(f"⚠️ 목표 비중의 합이 100%가 아닙니다. (현재: {total_target:.1f}%)")
+    else:
+        c2.metric("목표 비중 합계", f"{total_target:.1f}%", delta="완벽!", delta_color="normal")
+
+    # -------------------------------------------------------------------------
+    # 3. 리밸런싱 계산 및 가이드
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.markdown("#### 2️⃣ 매매 가이드 (Action Plan)")
+    st.caption("💡 정확한 매매 수량을 확인하세요. 양수(+)는 매수, 음수(-)는 매도입니다.")
+    
+    plan_list = []
+    
+    for index, row in df.iterrows():
+        ticker = row['티커']
+        # 에디터에서 수정한 목표 비중 가져오기
+        target_pct = edited_df.loc[edited_df['티커'] == ticker, "목표비중(%)"].values[0]
+        
+        # 세션 상태 업데이트
+        st.session_state.portfolio[index]['target_percent'] = target_pct
+        
+        # 리밸런싱 계산
+        current_val = row['평가금액(₩)']
+        target_val = total_value_krw * (target_pct / 100)
+        diff_val = target_val - current_val
+        
+        # 매매 수량 계산
+        price_krw = row['현재가(₩)']
+        action_qty = diff_val / price_krw if price_krw > 0 else 0
+        
+        if diff_val > 1000:
+            action = "🔵 매수 (Buy)"
+        elif diff_val < -1000:
+            action = "🔴 매도 (Sell)"
+        else:
+            action = "✅ 유지"
+            
+        plan_list.append({
+            "종목": ticker,
+            "현재비중": f"{row['현재비중(%)']:.1f}%",
+            "목표비중": f"{target_pct:.1f}%",
+            "조정금액(₩)": diff_val,
+            "매매수량": action_qty,
+            "Action": action
+        })
+
+    plan_df = pd.DataFrame(plan_list)
+    
+    st.dataframe(
+        plan_df.style.format({
+            "조정금액(₩)": "{:+,.0f}",
+            "매매수량": "{:+,.4f}"
+        }),
+        column_config={
+            "Action": st.column_config.TextColumn("주문 유형", help="리밸런싱을 위한 행동 지침")
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # -------------------------------------------------------------------------
+    # 4. Before & After 시각화
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.markdown("#### 3️⃣ 포트폴리오 변화 시뮬레이션")
+    
+    col_before, col_after = st.columns(2)
+    
+    with col_before:
+        st.markdown("**Before (현재 비중)**")
+        fig_cur = px.pie(df, values='평가금액(₩)', names='티커', hole=0.4)
+        fig_cur.update_layout(height=250, margin=dict(t=20, b=20, l=20, r=20), showlegend=True)
+        st.plotly_chart(fig_cur, use_container_width=True)
+        
+    with col_after:
+        st.markdown("**After (목표 비중)**")
+        target_data = edited_df[edited_df['목표비중(%)'] > 0].copy()
+        if not target_data.empty:
+            fig_target = px.pie(target_data, values='목표비중(%)', names='티커', hole=0.4)
+            fig_target.update_layout(height=250, margin=dict(t=20, b=20, l=20, r=20), showlegend=True)
+            st.plotly_chart(fig_target, use_container_width=True)
+
+    # 저장 버튼
+    if st.button("💾 목표 비중 저장하기", use_container_width=True):
+        st.success("✅ 목표 비중이 저장되었습니다! (세션 유지)")
+
+# -----------------------------------------------------------------------------
+# 메인 실행
+# -----------------------------------------------------------------------------
+def main():
+    gemini_key, fred_key, auto, openai_key, claude_key, grok_key = render_sidebar()
+    st.markdown("<h1 style='text-align: center; color: #3b82f6;'>🐋 크립토 인사이트 V7.5</h1>", unsafe_allow_html=True)
+    
+    tabs = st.tabs(["📊 대시보드", "🔮 사이클/매크로", "🛡️ 헤지", "⚖️ 리밸런싱", "📉 매도 전략", "🤖 AI 위원회", "🔎 심층 분석", "📰 뉴스", "🧮 도구"])
+    
+    with tabs[0]: render_dashboard_tab(gemini_key)
+    with tabs[1]: render_macro_tab(fred_key)
+    with tabs[2]: render_hedge_tab()
+    with tabs[3]: render_rebalance_tab()
+    with tabs[4]: render_exit_strategy_tab()
+    with tabs[5]: render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key)
+    with tabs[6]: render_deep_tab()
+    with tabs[7]: render_news_tab(gemini_key)
+    with tabs[8]: render_tools_tab()
+    
+    # [V7.1] 텔레그램 알림 체크 (실시간 갱신 활성화 시)
+    if auto and st.session_state.telegram.get('enabled'):
+        rate = get_usd_krw_rate()
+        mvrv = st.session_state.manual_data.get('mvrv_zscore', 0)
+        check_and_send_alerts(st.session_state.portfolio, rate, mvrv)
+    
+    if auto: time.sleep(10); st.rerun()
+
+if __name__ == "__main__":
+    main()
