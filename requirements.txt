@@ -3,10 +3,11 @@ pandas
 numpy
 plotly
 requests
-feedparser
-ccxt
 yfinance
-ta
-fredapi
-google-generativeai
+ccxt
 firebase-admin
+google-generativeai
+openai
+anthropic
+ta
+feedparser

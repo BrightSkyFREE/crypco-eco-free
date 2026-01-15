@@ -1,10 +1,11 @@
 """
-크립토 인사이트 대시보드 V6.8 (Smart Target Guide Edition)
+크립토 인사이트 대시보드 V7.7 (Asset Growth Tracker Edition)
 ==============================================================
-[V6.8 업데이트]
-1. 🎯 스마트 목표가 가이드: 자산 입력 시 전고점, 피보나치, 2배 수익, 라운드 피겨 가격 자동 제안
-2. 🧮 자동 계산 로직: 입력된 평단가와 환율을 기반으로 합리적인 매도 타겟 산출
-3. 기존 기능 통합: DXY, 뉴스 번역, 코인 상세 정보 등 V6.7 기능 유지
+[V7.7 업데이트]
+1. 📈 자산 성장 그래프: 일별 총 자산 추이를 Firebase에 저장하고 시각화
+2. 🛠️ 데이터 안정화: CoinGecko API 실패 시에도 앱이 정상 동작하도록 방어 코드 추가
+3. 🔑 API 키 영구 저장: Firebase DB에 API 키를 안전하게 저장 (V7.6)
+4. 기존 기능 통합: 스마트 목표가, DXY, 뉴스 번역 등 모든 기능 유지
 """
 
 import streamlit as st
@@ -64,7 +65,7 @@ except ImportError:
 # 페이지 설정 & CSS
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="크립토 인사이트 V6.8",
+    page_title="크립토 인사이트 V7.7",
     page_icon="🐋",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -194,67 +195,103 @@ def save_user_data(username):
         st.warning(f"데이터 저장 실패: {e}")
         return False
 
+# [수정 3-1] 자산 이력(History) 저장 함수 추가
+def update_asset_history(username, total_krw):
+    """현재 총 자산을 Firestore의 history 컬렉션에 저장"""
+    if not username or total_krw == 0: 
+        return
+
+    try:
+        db = init_firebase()
+        if not db:
+            return
+            
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        # users -> username -> history -> 날짜 문서 생성
+        doc_ref = db.collection("users").document(username).collection("history").document(today)
+        doc_ref.set({
+            "date": today,
+            "total_krw": total_krw,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+        # (성공 시 별도 메시지 없이 조용히 저장)
+    except Exception as e:
+        print(f"히스토리 저장 실패: {e}")
+
 # -----------------------------------------------------------------------------
-# [V7.4] AI 투자 위원회 설정
+# [V7.7] AI 모델 호출 함수 및 위원회 (Grok 완벽 지원)
 # -----------------------------------------------------------------------------
-AI_MODELS = {
-    "OPENAI": "gpt-4o",
-    "ANTHROPIC": "claude-3-5-sonnet-20241022",
-    "GOOGLE": "gemini-pro",
-    "XAI": "grok-2-latest"
+
+# 1. 모델 ID 설정 (실제 작동하는 최신 버전)
+MODELS = {
+    "OPENAI": "gpt-4o",                 
+    "ANTHROPIC": "claude-3-5-sonnet-20240620", 
+    "GOOGLE": "gemini-1.5-pro",         
+    "XAI": "grok-beta"                  # Grok 최신 베타 버전
 }
 
+# 2. 각 AI 호출 함수들
 def ask_chatgpt(api_key, prompt):
     """OpenAI GPT 호출"""
+    if not api_key: 
+        return "⚠️ API Key가 없습니다."
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         data = {
-            "model": AI_MODELS["OPENAI"],
+            "model": MODELS["OPENAI"],
             "messages": [
-                {"role": "system", "content": "You are a conservative hedge fund manager. Be critical and risk-averse. Answer in Korean."}, 
+                {"role": "system", "content": "You are a conservative hedge fund manager. Answer in Korean."}, 
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.5, "max_tokens": 500
+            "temperature": 0.5
         }
-        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=30)
-        if res.status_code == 200:
-            return res.json()['choices'][0]['message']['content']
-        return f"❌ 오류 ({res.status_code})"
-    except Exception as e: return f"연결 실패: {str(e)}"
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=20)
+        return res.json()['choices'][0]['message']['content'] if res.status_code == 200 else f"오류: {res.text}"
+    except Exception as e: 
+        return f"연결 실패: {e}"
 
 def ask_claude(api_key, prompt):
     """Anthropic Claude 호출"""
+    if not api_key: 
+        return "⚠️ API Key가 없습니다."
     try:
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
         data = {
-            "model": AI_MODELS["ANTHROPIC"],
-            "max_tokens": 500,
+            "model": MODELS["ANTHROPIC"],
+            "max_tokens": 1000,
             "messages": [{"role": "user", "content": prompt}],
-            "system": "You are a cold-hearted data analyst. Focus only on numbers and indicators. Answer in Korean."
+            "system": "You are a cold-hearted data analyst. Answer in Korean."
         }
-        res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data, timeout=30)
-        if res.status_code == 200:
-            return res.json()['content'][0]['text']
-        return f"❌ 오류 ({res.status_code})"
-    except Exception as e: return f"연결 실패: {str(e)}"
+        res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data, timeout=20)
+        return res.json()['content'][0]['text'] if res.status_code == 200 else f"오류: {res.text}"
+    except Exception as e: 
+        return f"연결 실패: {e}"
 
 def ask_grok(api_key, prompt):
-    """xAI Grok 호출"""
+    """xAI (Grok) API 호출 함수"""
+    if not api_key: 
+        return "⚠️ API Key가 없습니다."
     try:
+        # Grok은 OpenAI와 호환되는 방식이지만 엔드포인트가 다릅니다.
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         data = {
-            "model": AI_MODELS["XAI"],
+            "model": MODELS["XAI"],
             "messages": [
-                {"role": "system", "content": "You are an aggressive crypto whale. Look for high risk/reward opportunities. Answer in Korean."}, 
+                {"role": "system", "content": "You are an aggressive crypto whale. Answer in Korean."}, 
                 {"role": "user", "content": prompt}
             ],
             "stream": False
         }
-        res = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=data, timeout=30)
+        # xAI 공식 엔드포인트
+        res = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=data, timeout=20)
+        
         if res.status_code == 200:
             return res.json()['choices'][0]['message']['content']
-        return f"❌ 오류 ({res.status_code})"
-    except Exception as e: return f"연결 실패: {str(e)}"
+        else:
+            return f"❌ Grok 오류 ({res.status_code}): {res.text}"
+    except Exception as e: 
+        return f"Grok 연결 실패: {e}"
 
 # -----------------------------------------------------------------------------
 # 데이터 함수 (API)
@@ -437,30 +474,56 @@ def clean_and_translate_desc(text, api_key=None):
 
 @st.cache_data(ttl=3600)
 def get_coingecko_details(ticker):
+    """API 호출 실패 시 '알 수 없음' 데이터를 반환하여 에러 방지"""
+    default_data = {
+        'name': ticker, 'rank': '-', 'market_cap': 0, 
+        'desc': '상세 정보를 불러올 수 없습니다 (API 제한).',
+        'total_supply': 0, 'circulating_supply': 0,
+        'ath': 0, 'ath_change': 0, 'atl': 0, 'atl_change': 0
+    }
+    
     try:
+        # 1. 먼저 ticker를 coin_id로 변환 시도
         mapping = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana', 'XRP': 'ripple', 'DOGE': 'dogecoin', 'ADA': 'cardano'}
         coin_id = mapping.get(ticker.upper())
+        
         if not coin_id:
             search = requests.get(f"https://api.coingecko.com/api/v3/search?query={ticker}", timeout=3).json()
-            if search.get('coins'): coin_id = search['coins'][0]['id']
-            else: return None
+            if search.get('coins'): 
+                coin_id = search['coins'][0]['id']
+            else: 
+                return default_data
+        
+        # 2. 코인 상세 정보 가져오기
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}?localization=ko&tickers=false&market_data=true"
         data = requests.get(url, timeout=5).json()
+        
+        if 'market_data' not in data:
+            return default_data
+            
         m = data['market_data']
         desc_raw = data.get('description', {}).get('ko', '') or data.get('description', {}).get('en', '')
+        
         return {
-            'name': data['name'], 'rank': m.get('market_cap_rank', 'N/A'),
-            'market_cap': m.get('market_cap', {}).get('usd', 0),
-            'total_supply': m.get('total_supply', 0), 'circulating_supply': m.get('circulating_supply', 0),
-            'ath': m.get('ath', {}).get('usd', 0), 'ath_change': m.get('ath_change_percentage', {}).get('usd', 0),
-            'atl': m.get('atl', {}).get('usd', 0), 'atl_change': m.get('atl_change_percentage', {}).get('usd', 0),
-            'desc': desc_raw
+            'name': data.get('name', ticker), 
+            'rank': m.get('market_cap_rank', '-'),
+            'market_cap': m.get('market_cap', {}).get('usd', 0) or 0,
+            'total_supply': m.get('total_supply', 0) or 0, 
+            'circulating_supply': m.get('circulating_supply', 0) or 0,
+            'ath': m.get('ath', {}).get('usd', 0) or 0, 
+            'ath_change': m.get('ath_change_percentage', {}).get('usd', 0) or 0,
+            'atl': m.get('atl', {}).get('usd', 0) or 0, 
+            'atl_change': m.get('atl_change_percentage', {}).get('usd', 0) or 0,
+            'desc': desc_raw or '설명 정보가 없습니다.'
         }
-    except: return None
+    except Exception:
+        return default_data
 
 # --- 차트 및 분석 함수 ---
 @st.cache_data(ttl=3600)
 def get_weekly_ohlcv(symbol="BTC", weeks=60):
+    """주봉 데이터 (CCXT 우선, yfinance 백업)"""
+    # 1차 시도: CCXT (바이낸스)
     try:
         if CCXT_AVAILABLE:
             pair = f"{symbol}/USDT" if '/' not in symbol else symbol
@@ -468,17 +531,44 @@ def get_weekly_ohlcv(symbol="BTC", weeks=60):
             df['ts'] = pd.to_datetime(df['ts'], unit='ms')
             return df.set_index('ts')
     except: pass
+    
+    # 2차 시도: yfinance (백업)
+    try:
+        if YFINANCE_AVAILABLE:
+            ticker = f"{symbol}-USD" if symbol in ['BTC', 'ETH', 'SOL', 'XRP'] else symbol
+            df_yf = yf.download(ticker, period=f"{weeks}w", interval="1wk", progress=False)
+            if not df_yf.empty:
+                df = pd.DataFrame({
+                    'o': df_yf['Open'], 'h': df_yf['High'], 
+                    'l': df_yf['Low'], 'c': df_yf['Close'], 'v': df_yf['Volume']
+                })
+                return df
+    except: pass
     return None
 
 @st.cache_data(ttl=3600)
 def get_daily_ohlcv(symbol="BTC", days=1000):
-    """Pi Cycle 계산용 일봉 데이터"""
+    """일봉 데이터 (CCXT 우선, yfinance 백업) - Pi Cycle 계산용"""
+    # 1차 시도: CCXT (바이낸스) - 최대 1000개
     try:
         if CCXT_AVAILABLE:
             ex = ccxt.binance()
-            df = pd.DataFrame(ex.fetch_ohlcv(f'{symbol}/USDT', '1d', limit=days), columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            df = pd.DataFrame(ex.fetch_ohlcv(f'{symbol}/USDT', '1d', limit=min(days, 1000)), columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             df['ts'] = pd.to_datetime(df['ts'], unit='ms')
             return df.set_index('ts')
+    except: pass
+    
+    # 2차 시도: yfinance (백업)
+    try:
+        if YFINANCE_AVAILABLE:
+            ticker = f"{symbol}-USD" if symbol in ['BTC', 'ETH', 'SOL', 'XRP'] else symbol
+            df_yf = yf.download(ticker, period=f"{days}d", interval="1d", progress=False)
+            if not df_yf.empty:
+                df = pd.DataFrame({
+                    'o': df_yf['Open'], 'h': df_yf['High'], 
+                    'l': df_yf['Low'], 'c': df_yf['Close'], 'v': df_yf['Volume']
+                })
+                return df
     except: pass
     return None
 
@@ -561,60 +651,109 @@ def get_hedge_data(crypto_ticker="BTC-USD", user_stocks=[]):
     return None, None
 
 # -----------------------------------------------------------------------------
-# 사이드바 (로그인 + 자산 관리)
+# [수정] 사이드바: 로그인 + API 키 저장 기능 추가
 # -----------------------------------------------------------------------------
 def render_sidebar():
-    st.sidebar.title("🐋 설정 및 자산")
+    st.sidebar.title("🐋 크립토 인사이트 V7.6")
     
-    # -------------------------------------------------------------------------
-    # [V7.5] 로그인 섹션
-    # -------------------------------------------------------------------------
+    # 1. 로그인 섹션
+    if 'username' not in st.session_state:
+        st.session_state.username = ""
+        st.session_state.is_logged_in = False
+
     if not st.session_state.is_logged_in:
         with st.sidebar.form("login_form"):
-            st.markdown("### 🔐 로그인")
-            user_id = st.text_input("사용자 ID", placeholder="영문/숫자 입력")
-            submitted = st.form_submit_button("🚀 접속하기", use_container_width=True)
+            user_id = st.text_input("사용자 ID (닉네임)", placeholder="영문/숫자 입력")
+            submitted = st.form_submit_button("🚀 접속하기")
             
             if submitted and user_id:
                 st.session_state.username = user_id
                 st.session_state.is_logged_in = True
                 
-                # Firebase에서 데이터 로드
+                # DB에서 데이터 불러오기
                 saved_data = load_user_data(user_id)
-                if saved_data:
-                    st.session_state.portfolio = saved_data.get("portfolio", [])
-                    st.session_state.manual_data = saved_data.get("manual_data", st.session_state.manual_data)
-                    st.session_state.telegram = saved_data.get("telegram", st.session_state.telegram)
-                    keys = saved_data.get("api_keys", {})
-                    st.session_state.api_gemini = keys.get("gemini", "")
-                    st.session_state.api_fred = keys.get("fred", "")
-                    st.session_state.api_openai = keys.get("openai", "")
-                    st.session_state.api_claude = keys.get("claude", "")
-                    st.session_state.api_grok = keys.get("grok", "")
+                st.session_state.portfolio = saved_data.get("portfolio", [])
+                
+                # [중요] 저장된 API 키 불러오기
+                api_keys = saved_data.get("api_keys", {})
+                st.session_state.gemini_key = api_keys.get("gemini", "")
+                st.session_state.openai_key = api_keys.get("openai", "")
+                st.session_state.claude_key = api_keys.get("claude", "")
+                st.session_state.grok_key = api_keys.get("grok", "")
+                st.session_state.telegram_id = saved_data.get("telegram_id", "")
+                
                 st.rerun()
         
-        st.sidebar.info("👆 ID를 입력하고 접속해주세요.")
+        st.info("👈 먼저 ID를 입력하고 접속해주세요.")
         st.stop()
 
-    # -------------------------------------------------------------------------
-    # 로그인 후: 환영 메시지 & 로그아웃
-    # -------------------------------------------------------------------------
-    st.sidebar.success(f"반갑습니다, **{st.session_state.username}**님!")
-    col1, col2 = st.sidebar.columns(2)
-    if col1.button("💾 저장", use_container_width=True):
-        if save_user_data(st.session_state.username):
-            st.sidebar.success("저장 완료!")
-    if col2.button("🚪 로그아웃", use_container_width=True):
-        save_user_data(st.session_state.username)  # 로그아웃 전 저장
+    # 2. 로그인 후 화면
+    st.sidebar.success(f"환영합니다, **{st.session_state.username}**님!")
+    
+    # 로그아웃 버튼
+    if st.sidebar.button("로그아웃", type="secondary"):
         st.session_state.clear()
         st.rerun()
-    
+
+    st.sidebar.divider()
+
+    # 3. ⚙️ 설정 및 API 키 관리 (여기가 핵심!)
+    with st.sidebar.expander("🔑 API 키 및 설정", expanded=True):
+        st.caption("발급받은 API Key를 입력하고 **저장**하세요.")
+        
+        # 입력 필드들 (session_state와 연동하지 않고 직접 변수로 받음)
+        input_gemini = st.text_input("Gemini API Key", value=st.session_state.get("gemini_key", ""), type="password")
+        input_openai = st.text_input("OpenAI API Key", value=st.session_state.get("openai_key", ""), type="password")
+        input_claude = st.text_input("Claude API Key", value=st.session_state.get("claude_key", ""), type="password")
+        input_grok = st.text_input("Grok API Key", value=st.session_state.get("grok_key", ""), type="password")
+        
+        st.markdown("---")
+        input_telegram = st.text_input("텔레그램 Chat ID", value=st.session_state.get("telegram_id", ""), help="@userinfobot 에서 확인 가능")
+
+        # [저장 버튼]
+        if st.button("💾 설정 저장하기", type="primary"):
+            try:
+                # 1. 세션 상태 업데이트
+                st.session_state.gemini_key = input_gemini
+                st.session_state.openai_key = input_openai
+                st.session_state.claude_key = input_claude
+                st.session_state.grok_key = input_grok
+                st.session_state.telegram_id = input_telegram
+                
+                # 2. Firebase DB에 업데이트
+                db = init_firebase()
+                doc_ref = db.collection("users").document(st.session_state.username)
+                
+                # 기존 데이터 유지하면서 키 정보만 병합(merge)
+                doc_ref.set({
+                    "api_keys": {
+                        "gemini": input_gemini,
+                        "openai": input_openai,
+                        "claude": input_claude,
+                        "grok": input_grok
+                    },
+                    "telegram_id": input_telegram,
+                    "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }, merge=True)
+                
+                st.sidebar.success("✅ 설정이 안전하게 저장되었습니다!")
+                time.sleep(1)
+                st.rerun()
+                
+            except Exception as e:
+                st.sidebar.error(f"저장 실패: {e}")
+
+    # 4. 환율 정보 등 나머지 사이드바
+    st.sidebar.divider()
     rate = get_usd_krw_rate()
-    st.sidebar.markdown(f"**💵 기준 환율:** `{rate:,.0f} 원/$`")
+    st.sidebar.markdown(f"**💵 환율:** `{rate:,.0f} 원/$`")
+    
     auto_refresh = st.sidebar.checkbox("⚡ 실시간 갱신 (10초)", value=False)
     
     st.sidebar.divider()
-    with st.sidebar.expander("💰 자산 추가/수정", expanded=True):
+    
+    # 5. 💰 자산 추가/수정 섹션 (기존 기능 유지)
+    with st.sidebar.expander("💰 자산 추가/수정", expanded=False):
         exchanges = ["Binance", "Upbit", "Bithumb", "Korbit", "US Stock", "KR Stock", "OKX", "Bitget", "Gate.io"]
         exchange = st.selectbox("거래소/종목구분", exchanges)
         is_krw = exchange in ["Upbit", "Bithumb", "Korbit", "KR Stock"]
@@ -686,21 +825,6 @@ def render_sidebar():
                 st.rerun()
                 
     st.sidebar.divider()
-    with st.sidebar.expander("🔑 API 키 설정"):
-        gemini_key = st.text_input("Gemini API Key", value=st.session_state.get("api_gemini", ""), type="password", key="gemini_key")
-        fred_key = st.text_input("FRED API Key", value=st.session_state.get("api_fred", ""), type="password", key="fred_key")
-        st.divider()
-        st.caption("🤖 AI 위원회용 (선택)")
-        openai_key = st.text_input("OpenAI API Key", value=st.session_state.get("api_openai", ""), type="password", key="openai_key")
-        claude_key = st.text_input("Claude API Key", value=st.session_state.get("api_claude", ""), type="password", key="claude_key")
-        grok_key = st.text_input("Grok API Key", value=st.session_state.get("api_grok", ""), type="password", key="grok_key")
-        
-        # API 키 세션에 저장
-        st.session_state.api_gemini = gemini_key
-        st.session_state.api_fred = fred_key
-        st.session_state.api_openai = openai_key
-        st.session_state.api_claude = claude_key
-        st.session_state.api_grok = grok_key
     
     # 텔레그램 알림 설정
     with st.sidebar.expander("📢 텔레그램 알림 설정"):
@@ -725,35 +849,77 @@ def render_sidebar():
             3. **Chat ID** 확인: @userinfobot에 메시지 보내면 ID 확인 가능
             """)
     
-    return gemini_key, fred_key, auto_refresh, openai_key, claude_key, grok_key
+    return input_gemini, input_openai, input_claude, input_grok, auto_refresh
 
 # -----------------------------------------------------------------------------
 # 탭 1: 대시보드
 # -----------------------------------------------------------------------------
 def render_dashboard_tab(gemini_key):
     st.markdown("### 📊 내 자산 & 시장 현황")
+    
+    # --- [여기서부터 새로 추가된 그래프 코드] ---
+    if st.session_state.get('username'):
+        try:
+            db = init_firebase()
+            if db:
+                # 히스토리 데이터 가져오기 (날짜순 정렬)
+                history_ref = db.collection("users").document(st.session_state.username).collection("history")
+                docs = history_ref.order_by("date").stream()
+                
+                history_data = []
+                for doc in docs:
+                    data = doc.to_dict()
+                    if data.get('date') and data.get('total_krw'):
+                        history_data.append({"Date": data['date'], "Total Asset (KRW)": data['total_krw']})
+                
+                if len(history_data) > 1:  # 데이터가 2개 이상일 때만 그래프 그림
+                    df_history = pd.DataFrame(history_data)
+                    
+                    # Plotly로 아름다운 라인 차트 그리기
+                    fig_hist = px.line(df_history, x='Date', y='Total Asset (KRW)', 
+                                       title="📈 내 자산 성장 추이", markers=True)
+                    fig_hist.update_traces(line_color='#00CC96', line_width=3)
+                    fig_hist.update_layout(height=280, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                    st.divider()
+                elif len(history_data) == 1:
+                    st.caption(f"📅 자산 기록 시작일: {history_data[0]['Date']} (내일부터 그래프가 그려집니다)")
+                    
+        except Exception:
+            # 에러 나도 대시보드는 보여줘야 하므로 pass
+            pass
+    # --- [그래프 코드 끝] ---
+    
     rate = get_usd_krw_rate()
     portfolio = st.session_state.portfolio
     
-    if not portfolio: st.info("👈 사이드바에서 자산을 추가해주세요."); return
+    if not portfolio: 
+        st.info("👈 사이드바에서 자산을 추가해주세요.")
+        return
 
-    total_krw = 0; total_cost = 0; pie_data = []; table_data = []
+    total_krw = 0
+    total_cost = 0
+    pie_data = []
+    table_data = []
     
     for p in portfolio:
         cur_p, curr = get_market_price(p['ticker'], p.get('exchange', 'Binance'))
         k_rate = rate if curr == "USD" else 1
         val = p['quantity'] * cur_p * k_rate
         cost = p['quantity'] * p['avg_price'] * k_rate
-        total_krw += val; total_cost += cost
+        total_krw += val
+        total_cost += cost
         pie_data.append({'Coin': p['ticker'], 'Value': val})
         hit = (p['target_price'] > 0) and (cur_p >= p['target_price'])
-        table_data.append({"코인": p['ticker'], "거래소": p.get('exchange'), "수량": p['quantity'], 
-                           "평가금액": f"₩{val:,.0f}", "수익률": (val-cost)/cost*100 if cost>0 else 0, "_hit": hit})
+        table_data.append({
+            "코인": p['ticker'], "거래소": p.get('exchange'), "수량": p['quantity'], 
+            "평가금액": f"₩{val:,.0f}", "수익률": (val-cost)/cost*100 if cost > 0 else 0, "_hit": hit
+        })
 
     k1, k2, k3 = st.columns(3)
     k1.metric("총 자산 (KRW)", f"₩{total_krw:,.0f}")
     pnl = total_krw - total_cost
-    k2.metric("총 수익률", f"{pnl/total_cost*100:+.2f}%", f"₩{pnl:+,.0f}" if total_cost>0 else "0")
+    k2.metric("총 수익률", f"{pnl/total_cost*100:+.2f}%", f"₩{pnl:+,.0f}" if total_cost > 0 else "0")
     
     btc_k = get_market_price("BTC", "Upbit")[0]
     btc_u = get_market_price("BTC", "Binance")[0]
@@ -761,10 +927,15 @@ def render_dashboard_tab(gemini_key):
     with k3:
         st.markdown(f"**🌶️ 김치 프리미엄**: <span class='kimchi-badge k-blue'>{kimchi:+.2f}%</span>", unsafe_allow_html=True)
 
+    # [수정 3-3] 계산된 총 자산을 DB에 기록 (자동 저장)
+    if st.session_state.get('username') and total_krw > 0:
+        update_asset_history(st.session_state.username, total_krw)
+
     st.divider()
     c1, c2 = st.columns([1, 2])
     with c1:
-        if pie_data: st.plotly_chart(px.pie(pie_data, values='Value', names='Coin', hole=0.4).update_layout(margin=dict(t=0,b=0,l=0,r=0), height=200), use_container_width=True)
+        if pie_data: 
+            st.plotly_chart(px.pie(pie_data, values='Value', names='Coin', hole=0.4).update_layout(margin=dict(t=0,b=0,l=0,r=0), height=200), use_container_width=True)
     with c2:
         if table_data:
             df = pd.DataFrame(table_data)
@@ -949,61 +1120,113 @@ def render_macro_tab(fred_key):
             st.write("50 이상은 경제 확장, 50 이하는 수축을 의미합니다. 침체기엔 위험자산 회피 성향이 강해질 수 있습니다.")
 
 # -----------------------------------------------------------------------------
-# 탭 3: 심층 분석
+# 탭 3: 심층 분석 (V7.6 안정성 강화)
 # -----------------------------------------------------------------------------
 def render_deep_tab():
-    st.markdown("### 🔎 심층 분석 (고래 추적)")
+    # 1. 고래 추적 섹션
+    st.markdown("### 🔎 심층 분석 (실시간 체결 고래 포착)")
+    st.caption("바이낸스에서 발생한 $50,000 이상의 대량 체결 내역을 추적합니다.")
+
     try:
         if CCXT_AVAILABLE:
-            trades = ccxt.binance().fetch_trades('BTC/USDT', limit=50)
-            large = [t for t in trades if (t['price']*t['amount']) > 50000]
+            # 타임아웃 설정으로 멈춤 방지
+            exchange = ccxt.binance({'timeout': 10000, 'enableRateLimit': True})
+            trades = exchange.fetch_trades('BTC/USDT', limit=100)
+            
+            large = [t for t in trades if (t['price'] * t['amount']) > 50000]
+            
             if large:
                 df = pd.DataFrame(large)
                 df['time'] = pd.to_datetime(df['timestamp'], unit='ms')
-                st.dataframe(df[['time', 'side', 'price', 'amount']].sort_values('time', ascending=False), use_container_width=True)
-            else: st.info("최근 대량 체결 내역 없음")
-    except: st.warning("데이터 로딩 실패")
-    
-    st.divider()
-    st.markdown("### 📊 비트코인 vs 나스닥 상관관계 (버핏 지표)")
-    st.caption("💡 비트코인이 증시(나스닥)와 얼마나 비슷하게 움직이는지 보여줍니다. (1.0 = 동일, -1.0 = 반대)")
-    
-    try:
-        if YFINANCE_AVAILABLE:
-            end = datetime.now()
-            start = end - timedelta(days=365)
-            btc = yf.download("BTC-USD", start=start, end=end, progress=False)['Close']
-            nasdaq = yf.download("^IXIC", start=start, end=end, progress=False)['Close']
-            
-            # 데이터 인덱스 정리 (타임존 제거)
-            btc.index = btc.index.tz_localize(None)
-            nasdaq.index = nasdaq.index.tz_localize(None)
-            
-            # 결합 및 상관계수 계산
-            df_corr = pd.concat([btc, nasdaq], axis=1).dropna()
-            df_corr.columns = ['BTC', 'NASDAQ']
-            
-            corr = df_corr['BTC'].corr(df_corr['NASDAQ'])
-            
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                st.metric("상관계수 (1년)", f"{corr:.2f}")
-                if corr > 0.7: st.error("🚨 동조화 심화 (커플링)")
-                elif corr < 0.3: st.success("✅ 탈동조화 (디커플링)")
-                else: st.info("⚖️ 일반적 흐름")
-            with col2:
-                # 정규화하여 추이 비교
-                df_norm = df_corr / df_corr.iloc[0]
-                st.line_chart(df_norm)
-            
-            with st.expander("버핏 지표 해석"):
-                st.markdown("""
-                - **상관계수 0.7 이상**: 비트코인이 주식처럼 움직임 (매크로 영향 큼)
-                - **상관계수 0.3 이하**: 비트코인이 독립 자산으로 움직임
-                - **투자 전략**: 디커플링 시 포트폴리오 분산 효과가 높아집니다.
-                """)
+                df['side'] = df['side'].map({'buy': '🟢 매수', 'sell': '🔴 매도'})
+                df['value'] = df['price'] * df['amount']
+                
+                display_df = df[['time', 'side', 'price', 'amount', 'value']].sort_values('time', ascending=False)
+                display_df.columns = ['시간', '종류', '체결가($)', '수량(BTC)', '체결액($)']
+                
+                st.dataframe(
+                    display_df.style.format({
+                        '체결가($)': '{:,.2f}', 
+                        '수량(BTC)': '{:,.4f}', 
+                        '체결액($)': '{:,.0f}'
+                    }), 
+                    use_container_width=True,
+                    height=300
+                )
+            else:
+                st.info("📉 최근 100건 중 5만 달러 이상 대량 체결 없음 (시장 조용)")
+        else:
+            st.warning("CCXT 라이브러리가 로드되지 않았습니다.")
+
     except Exception as e:
-        st.error(f"상관관계 분석 실패: {e}")
+        st.warning(f"⚠️ 고래 데이터 로딩 문제: {e}")
+        st.caption("💡 팁: 잠시 후 새로고침 해보세요. 거래소 연결이 불안정할 수 있습니다.")
+
+    st.divider()
+
+    # 2. 버핏 지표 섹션 (상관관계)
+    st.markdown("### 📊 비트코인 vs 나스닥 상관관계 (버핏 지표)")
+    st.caption("💡 비트코인이 증시(나스닥)와 얼마나 비슷하게 움직이는지 보여줍니다. (1.0에 가까울수록 동조화)")
+
+    try:
+        if not YFINANCE_AVAILABLE:
+            raise Exception("yfinance 라이브러리 없음")
+            
+        end = datetime.now()
+        start = end - timedelta(days=365)
+        
+        btc = yf.download("BTC-USD", start=start, end=end, progress=False)
+        nasdaq = yf.download("^IXIC", start=start, end=end, progress=False)
+
+        if btc.empty or nasdaq.empty:
+            raise ValueError("데이터를 불러올 수 없습니다. (Yahoo Finance 응답 없음)")
+
+        # 멀티인덱스 컬럼 처리
+        if isinstance(btc.columns, pd.MultiIndex):
+            btc = btc['Close'].iloc[:, 0] if len(btc['Close'].shape) > 1 else btc['Close']
+        else:
+            btc = btc['Close']
+            
+        if isinstance(nasdaq.columns, pd.MultiIndex):
+            nasdaq = nasdaq['Close'].iloc[:, 0] if len(nasdaq['Close'].shape) > 1 else nasdaq['Close']
+        else:
+            nasdaq = nasdaq['Close']
+
+        # 타임존 제거 및 결합
+        btc.index = btc.index.tz_localize(None)
+        nasdaq.index = nasdaq.index.tz_localize(None)
+        
+        df_corr = pd.concat([btc, nasdaq], axis=1).dropna()
+        df_corr.columns = ['BTC', 'NASDAQ']
+        
+        corr = df_corr['BTC'].corr(df_corr['NASDAQ'])
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("상관계수 (최근 1년)", f"{corr:.2f}")
+            if corr > 0.7: 
+                st.error("🚨 동조화 심화 (커플링)")
+                st.caption("증시가 떨어지면 코인도 떨어질 확률 높음")
+            elif corr < 0.3: 
+                st.success("✅ 탈동조화 (디커플링)")
+                st.caption("증시와 독립적으로 움직임")
+            else: 
+                st.info("⚖️ 일반적 흐름")
+        
+        with col2:
+            df_norm = df_corr / df_corr.iloc[0]
+            st.line_chart(df_norm)
+        
+        with st.expander("버핏 지표 해석"):
+            st.markdown("""
+            - **상관계수 0.7 이상**: 비트코인이 주식처럼 움직임 (매크로 영향 큼)
+            - **상관계수 0.3 이하**: 비트코인이 독립 자산으로 움직임
+            - **투자 전략**: 디커플링 시 포트폴리오 분산 효과가 높아집니다.
+            """)
+
+    except Exception as e:
+        st.error(f"⚠️ 차트 분석 실패: {e}")
+        st.caption("일시적인 네트워크 오류일 수 있습니다. 나중에 다시 시도해주세요.")
 
 # -----------------------------------------------------------------------------
 # 탭 4: 뉴스 & 알림
@@ -1052,42 +1275,37 @@ def render_tools_tab():
     except Exception as e: st.error(f"오류 발생: {e}")
 
 # -----------------------------------------------------------------------------
-# 탭: AI 투자 위원회 (V7.4)
+# 탭: AI 투자 위원회 (V7.7 - Grok 완벽 지원)
 # -----------------------------------------------------------------------------
 def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
-    st.markdown("### 🤖 AI 투자 위원회 (Cross-Check)")
-    st.caption("여러 AI 모델들이 각자의 페르소나로 시장을 분석하고 투표합니다.")
+    st.markdown("### 🤖 AI 투자 위원회 (4대장 Cross-Check)")
+    st.caption("Gemini, GPT, Claude, Grok이 각자의 페르소나로 시장을 분석하고 토론합니다.")
 
+    # 분석 대상 코인 선택
     if not st.session_state.portfolio:
-        st.info("👈 포트폴리오에 자산을 먼저 추가해주세요.")
+        st.info("👈 먼저 포트폴리오에 자산을 추가해주세요.")
         return
-        
+    
     coins = list(set([p['ticker'] for p in st.session_state.portfolio if "Stock" not in p.get('exchange', '')]))
     if not coins:
         st.warning("분석할 코인이 없습니다.")
         return
-
+        
     target_coin = st.selectbox("📋 위원회 안건 상정 (코인 선택)", coins, key="council_coin")
     
-    # 데이터 수집
-    w_df = get_weekly_ohlcv(target_coin, 60)
+    # 프롬프트 데이터 준비
     info = get_coingecko_details(target_coin)
-    tech = analyze_technical(w_df) if w_df is not None else {}
-    news = get_translated_news([target_coin], gemini_key)
     rate = get_usd_krw_rate()
     cur_price, _ = get_market_price(target_coin, 'Binance')
+    price_info = f"현재가: ${cur_price:,.2f}, 시총순위: {info.get('rank', '-')}위"
     
-    # 프롬프트 구성
     context_prompt = f"""
-    [분석 대상] {target_coin}
-    - 현재가: ${cur_price:,.2f} (₩{cur_price * rate:,.0f})
-    - 마켓캡 순위: #{info['rank'] if info else 'N/A'}
-    - 기술적 신호: {tech.get('signal', 'N/A')} (Score: {tech.get('score', 0)})
-    - 최근 뉴스: {[n['title'] for n in news[:3]]}
-    - MVRV Z-Score: {st.session_state.manual_data['mvrv_zscore']}
+    [시장 데이터]
+    - 대상 자산: {target_coin} ({price_info})
+    - 현재 상황: 비트코인과 시장 전반의 데이터를 참고하여 투자 조언을 해줘.
+    - MVRV Z-Score: {st.session_state.manual_data.get('mvrv_zscore', 2.2)}
     
-    위 데이터를 바탕으로 투자 의견(매수/매도/관망)을 제시하고, 
-    너의 역할(Persona)에 맞춰서 그 이유를 3줄 이내로 핵심만 한국어로 설명해.
+    위 데이터를 바탕으로 투자 의견(매수/매도/관망)을 제시하고, 너의 역할(Persona)에 맞춰서 그 이유를 3줄 이내로 핵심만 한국어로 설명해.
     마지막에 반드시 [결론: 매수/매도/관망] 형태로 표시해.
     """
 
@@ -1100,58 +1318,59 @@ def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
     c4.metric("🚀 Grok", "🐋 공격투자" if grok_key else "❌ 미설정")
 
     if st.button("🗳️ 위원회 소집 및 투표 시작", type="primary", use_container_width=True):
-        if not (gemini_key or openai_key or claude_key or grok_key):
-            st.error("⚠️ 최소 1개 이상의 API 키가 필요합니다. 사이드바에서 설정하세요.")
-            return
-
-        with st.spinner("🔄 AI 위원들이 데이터를 분석하고 투표 중입니다..."):
+        with st.spinner("AI 위원들이 데이터를 분석하고 투표 중입니다... (약 10~20초 소요)"):
             opinions = {}
             
-            # 1. Gemini (뉴스/매크로)
+            # 1. Gemini (Google)
             if gemini_key and GENAI_AVAILABLE:
                 try:
                     genai.configure(api_key=gemini_key)
-                    g_prompt = "당신은 거시경제를 분석하는 뉴스 앵커입니다. 최신 뉴스와 거시 경제 관점에서 분석하세요.\n\n" + context_prompt
-                    model = genai.GenerativeModel(AI_MODELS['GOOGLE']) 
-                    opinions['📰 Gemini (뉴스앵커)'] = model.generate_content(g_prompt).text
+                    model = genai.GenerativeModel(MODELS['GOOGLE'])
+                    opinions['📰 Gemini (뉴스앵커)'] = model.generate_content("당신은 거시경제 뉴스 앵커입니다. " + context_prompt).text
                 except Exception as e: 
                     opinions['📰 Gemini'] = f"❌ 오류: {e}"
+            else: 
+                opinions['📰 Gemini'] = "💤 (Key 없음)"
             
-            # 2. ChatGPT (보수적 펀드매니저)
-            if openai_key:
-                opinions['💼 ChatGPT (펀드매니저)'] = ask_chatgpt(openai_key, context_prompt)
-                
-            # 3. Claude (데이터 분석가)
-            if claude_key:
-                opinions['📊 Claude (데이터분석)'] = ask_claude(claude_key, context_prompt)
-                
-            # 4. Grok (공격적 투자자)
-            if grok_key:
-                opinions['🚀 Grok (공격투자)'] = ask_grok(grok_key, context_prompt)
+            # 2. ChatGPT (OpenAI)
+            opinions['💼 ChatGPT (펀드매니저)'] = ask_chatgpt(openai_key, context_prompt)
+            
+            # 3. Claude (Anthropic)
+            opinions['📊 Claude (데이터분석)'] = ask_claude(claude_key, context_prompt)
+            
+            # 4. Grok (xAI) - 완벽 지원!
+            opinions['🚀 Grok (공격투자)'] = ask_grok(grok_key, context_prompt)
 
-        # 결과 표시
+        # 결과 표시 (카드 형태)
         st.divider()
         st.markdown("#### 💬 위원회 검토 의견서")
         
-        buy_vote = 0
-        sell_vote = 0
-        hold_vote = 0
+        buy_vote = 0; sell_vote = 0; hold_vote = 0
+        cols = st.columns(2)
+        idx = 0
         
         for name, text in opinions.items():
             # 투표 집계
             text_lower = text.lower()
-            if "매수" in text or "buy" in text_lower: buy_vote += 1
-            elif "매도" in text or "sell" in text_lower: sell_vote += 1
-            else: hold_vote += 1
+            if "매수" in text or "buy" in text_lower: 
+                buy_vote += 1
+                box_color = "#d1fae5"  # 초록 배경
+            elif "매도" in text or "sell" in text_lower: 
+                sell_vote += 1
+                box_color = "#fee2e2"  # 빨강 배경
+            else: 
+                hold_vote += 1
+                box_color = "#e5e7eb"  # 회색 배경
             
-            # 카드 UI
-            st.markdown(f"""
-            <div style="background: white; padding: 15px; border-radius: 10px; border: 1px solid #e5e7eb; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
-                <div style="font-weight: bold; color: #2563eb; margin-bottom: 8px; font-size: 1.1em;">{name}</div>
-                <div style="font-size: 0.95em; line-height: 1.6; color: #374151;">{text}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
+            with cols[idx % 2]:
+                st.markdown(f"""
+                <div style="background-color: {box_color}; padding: 15px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #ccc;">
+                    <div style="font-weight: bold; margin-bottom: 5px; color: #1e40af;">👤 {name}</div>
+                    <div style="font-size: 0.9em; line-height: 1.5;">{text}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            idx += 1
+        
         # 최종 결론
         total = len(opinions)
         result_color = "#6b7280"
@@ -1579,10 +1798,13 @@ def render_rebalance_tab():
 # 메인 실행
 # -----------------------------------------------------------------------------
 def main():
-    gemini_key, fred_key, auto, openai_key, claude_key, grok_key = render_sidebar()
-    st.markdown("<h1 style='text-align: center; color: #3b82f6;'>🐋 크립토 인사이트 V7.5</h1>", unsafe_allow_html=True)
+    gemini_key, openai_key, claude_key, grok_key, auto = render_sidebar()
+    st.markdown("<h1 style='text-align: center; color: #3b82f6;'>🐋 크립토 인사이트 V7.7</h1>", unsafe_allow_html=True)
     
     tabs = st.tabs(["📊 대시보드", "🔮 사이클/매크로", "🛡️ 헤지", "⚖️ 리밸런싱", "📉 매도 전략", "🤖 AI 위원회", "🔎 심층 분석", "📰 뉴스", "🧮 도구"])
+    
+    # FRED key는 세션에서 가져오거나 gemini_key 사용
+    fred_key = st.session_state.get("fred_key", gemini_key)
     
     with tabs[0]: render_dashboard_tab(gemini_key)
     with tabs[1]: render_macro_tab(fred_key)
