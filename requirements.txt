@@ -7,7 +7,6 @@ yfinance
 ccxt
 firebase-admin
 google-generativeai
-openai
-anthropic
 ta
 feedparser
+fredapi
