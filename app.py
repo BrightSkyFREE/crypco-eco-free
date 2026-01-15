@@ -1,13 +1,13 @@
 """
-크립토 인사이트 대시보드 V7.8 (Performance & UX Upgrade)
+크립토 인사이트 대시보드 V7.9 (UX Enhancement Edition)
 ==============================================================
-[V7.8 업데이트]
-1. ⚡ AI 위원회 병렬 처리: 응답 속도 4배 향상 (20초 → 5초)
-2. 📥 포트폴리오 CSV 내보내기: 자산 현황 다운로드 기능
-3. 📊 24시간 변동률 표시: 실시간 가격 변화 확인
-4. 🌶️ 코인별 김치 프리미엄: 보유 코인별 프리미엄 표시
-5. 📱 모바일 UI 최적화: 반응형 디자인 개선
-6. 🔔 가격 변동 알림: % 기준 알림 기능 추가
+[V7.9 업데이트]
+1. 🗺️ 트리맵 시각화: 파이차트 대신 수익률 기반 색상 트리맵 (자산 많을 때 직관적)
+2. 📱 모바일 로그인 개선: 메인 화면 중앙에 로그인 UI 배치
+3. ⚡ AI 위원회 병렬 처리: 응답 속도 4배 향상 (V7.9)
+4. 📥 포트폴리오 CSV 내보내기 (V7.9)
+5. 📊 24시간 변동률 표시 (V7.9)
+6. 🌶️ 코인별 김치 프리미엄 (V7.9)
 """
 
 import streamlit as st
@@ -69,7 +69,7 @@ except ImportError:
 # 페이지 설정 & CSS
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="크립토 인사이트 V7.8",
+    page_title="크립토 인사이트 V7.9",
     page_icon="🐋",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -114,12 +114,12 @@ st.markdown("""
     
     .twitter-btn { display: block; width: 100%; padding: 10px; background-color: #1DA1F2; color: white !important; border-radius: 8px; text-align: center; text-decoration: none; font-weight: bold; }
     
-    /* [V7.8] 24시간 변동률 스타일 */
+    /* [V7.9] 24시간 변동률 스타일 */
     .change-positive { color: #16a34a; font-weight: bold; }
     .change-negative { color: #dc2626; font-weight: bold; }
     .change-neutral { color: #6b7280; }
     
-    /* [V7.8] 모바일 반응형 스타일 */
+    /* [V7.9] 모바일 반응형 스타일 */
     @media (max-width: 768px) {
         .stApp { padding: 0.5rem; }
         [data-testid="column"] { padding: 0.25rem !important; }
@@ -130,7 +130,7 @@ st.markdown("""
         .kimchi-badge { font-size: 0.75em; padding: 3px 8px; }
     }
     
-    /* [V7.8] 김치 프리미엄 테이블 스타일 */
+    /* [V7.9] 김치 프리미엄 테이블 스타일 */
     .kimchi-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
     .kimchi-table th, .kimchi-table td { padding: 8px; text-align: center; border-bottom: 1px solid #e5e7eb; }
     .kimchi-table th { background-color: #f3f4f6; font-weight: 600; }
@@ -152,7 +152,7 @@ if 'username' not in st.session_state:
 if 'is_logged_in' not in st.session_state:
     st.session_state.is_logged_in = False
 
-# [V7.8] API 키 세션 상태 초기화
+# [V7.9] API 키 세션 상태 초기화
 if 'gemini_key' not in st.session_state:
     st.session_state.gemini_key = ""
 if 'openai_key' not in st.session_state:
@@ -257,7 +257,7 @@ def update_asset_history(username, total_krw):
         print(f"히스토리 저장 실패: {e}")
 
 # -----------------------------------------------------------------------------
-# [V7.8] AI 모델 호출 함수 및 위원회 (Grok 완벽 지원)
+# [V7.9] AI 모델 호출 함수 및 위원회 (Grok 완벽 지원)
 # -----------------------------------------------------------------------------
 
 # 1. 모델 ID 설정 (2025년 1월 기준 최신 버전)
@@ -385,7 +385,7 @@ def check_and_send_alerts(portfolio, rate, mvrv):
                 alerts.append(f"🎯 <b>{ticker} 목표가 도달!</b>\n\n현재가: {unit}{cur_p:,.2f}\n목표가: {unit}{target:,.2f}\n\n매도 타이밍이 왔습니다! 📈")
                 st.session_state.sent_alerts.add(alert_key)
         
-        # [V7.8] 24시간 급등/급락 알림 (±10% 이상)
+        # [V7.9] 24시간 급등/급락 알림 (±10% 이상)
         change_24h = get_24h_change(ticker, exchange)
         if abs(change_24h) >= 10:
             alert_key = f"change24h_{ticker}_{datetime.now().strftime('%Y%m%d')}"
@@ -459,7 +459,7 @@ def get_market_price(ticker, exchange):
     except: pass
     return 0.0, "USD"
 
-# [V7.8] 24시간 변동률 조회 함수
+# [V7.9] 24시간 변동률 조회 함수
 @st.cache_data(ttl=60)
 def get_24h_change(ticker, exchange="Upbit"):
     """24시간 가격 변동률 조회"""
@@ -482,7 +482,7 @@ def get_24h_change(ticker, exchange="Upbit"):
         pass
     return 0.0
 
-# [V7.8] 코인별 김치 프리미엄 조회
+# [V7.9] 코인별 김치 프리미엄 조회
 @st.cache_data(ttl=30)
 def get_kimchi_premium(ticker, rate):
     """특정 코인의 김치 프리미엄 계산"""
@@ -838,42 +838,11 @@ def update_single_key_db(username, key_type, value, is_telegram=False):
 # [수정] 사이드바: 로그인 + 개별 API 키 관리 기능
 # -----------------------------------------------------------------------------
 def render_sidebar():
-    st.sidebar.title("🐋 크립토 인사이트 V7.8")
+    st.sidebar.title("🐋 크립토 인사이트 V7.9")
     
-    # 1. 로그인 섹션
-    if 'username' not in st.session_state:
-        st.session_state.username = ""
-        st.session_state.is_logged_in = False
-
-    if not st.session_state.is_logged_in:
-        with st.sidebar.form("login_form"):
-            user_id = st.text_input("사용자 ID (닉네임)", placeholder="영문/숫자 입력")
-            submitted = st.form_submit_button("🚀 접속하기")
-            
-            if submitted and user_id:
-                st.session_state.username = user_id
-                st.session_state.is_logged_in = True
-                
-                # DB에서 데이터 불러오기
-                saved_data = load_user_data(user_id)
-                st.session_state.portfolio = saved_data.get("portfolio", [])
-                
-                # 저장된 API 키 불러오기
-                api_keys = saved_data.get("api_keys", {})
-                st.session_state.gemini_key = api_keys.get("gemini", "")
-                st.session_state.openai_key = api_keys.get("openai", "")
-                st.session_state.claude_key = api_keys.get("claude", "")
-                st.session_state.grok_key = api_keys.get("grok", "")
-                st.session_state.telegram_id = saved_data.get("telegram_id", "")
-                
-                # 텔레그램 봇 토큰 등은 기존 구조 유지
-                tg_data = saved_data.get("telegram", {})
-                if 'bot_token' in tg_data:
-                    st.session_state.telegram['bot_token'] = tg_data['bot_token']
-                
-                st.rerun()
-        
-        st.info("👈 먼저 ID를 입력하고 접속해주세요.")
+    # [V7.9] 이미 로그인된 경우 로그인 폼 스킵 (main에서 처리)
+    if not st.session_state.get('is_logged_in', False):
+        st.sidebar.info("👈 메인 화면에서 로그인해주세요.")
         st.stop()
 
     # 2. 로그인 후 화면
@@ -1077,9 +1046,9 @@ def render_dashboard_tab(gemini_key):
 
     total_krw = 0
     total_cost = 0
-    pie_data = []
+    treemap_data = []  # [V7.9] 트리맵용 데이터 (수익률 포함)
     table_data = []
-    csv_data = []  # [V7.8] CSV 내보내기용
+    csv_data = []  # [V7.9] CSV 내보내기용
     
     for p in portfolio:
         cur_p, curr = get_market_price(p['ticker'], p.get('exchange', 'Binance'))
@@ -1088,10 +1057,19 @@ def render_dashboard_tab(gemini_key):
         cost = p['quantity'] * p['avg_price'] * k_rate
         total_krw += val
         total_cost += cost
-        pie_data.append({'Coin': p['ticker'], 'Value': val})
+        profit_rate = (val-cost)/cost*100 if cost > 0 else 0
+        
+        # [V7.9] 트리맵용 데이터 (수익률에 따른 색상)
+        treemap_data.append({
+            'Coin': p['ticker'], 
+            'Value': val, 
+            'ProfitRate': profit_rate,
+            'Display': f"{p['ticker']}\n₩{val/1000000:.1f}M\n{profit_rate:+.1f}%"
+        })
+        
         hit = (p['target_price'] > 0) and (cur_p >= p['target_price'])
         
-        # [V7.8] 24시간 변동률 조회
+        # [V7.9] 24시간 변동률 조회
         change_24h = get_24h_change(p['ticker'], p.get('exchange', 'Binance'))
         change_class = "change-positive" if change_24h > 0 else "change-negative" if change_24h < 0 else "change-neutral"
         
@@ -1101,7 +1079,7 @@ def render_dashboard_tab(gemini_key):
             "수량": p['quantity'], 
             "평가금액": f"₩{val:,.0f}", 
             "24H": f"{change_24h:+.2f}%",
-            "수익률": (val-cost)/cost*100 if cost > 0 else 0, 
+            "수익률": profit_rate, 
             "_hit": hit
         })
         
@@ -1113,7 +1091,7 @@ def render_dashboard_tab(gemini_key):
             "평단가": p['avg_price'],
             "현재가": cur_p,
             "평가금액(KRW)": val,
-            "수익률(%)": (val-cost)/cost*100 if cost > 0 else 0,
+            "수익률(%)": profit_rate,
             "24시간변동률(%)": change_24h
         })
 
@@ -1136,15 +1114,45 @@ def render_dashboard_tab(gemini_key):
     st.divider()
     c1, c2 = st.columns([1, 2])
     with c1:
-        if pie_data: 
-            st.plotly_chart(px.pie(pie_data, values='Value', names='Coin', hole=0.4).update_layout(margin=dict(t=0,b=0,l=0,r=0), height=200), use_container_width=True)
+        # [V7.9] 트리맵 시각화 (수익률에 따른 색상)
+        if treemap_data:
+            df_treemap = pd.DataFrame(treemap_data)
+            
+            # 자산 개수에 따라 시각화 방식 선택
+            if len(treemap_data) >= 3:
+                # 트리맵: 자산이 3개 이상일 때 직관적
+                fig = px.treemap(
+                    df_treemap, 
+                    path=['Coin'], 
+                    values='Value',
+                    color='ProfitRate',
+                    color_continuous_scale='RdYlGn',  # 빨강(손실) → 노랑(보합) → 초록(수익)
+                    color_continuous_midpoint=0,
+                    hover_data={'Value': ':,.0f', 'ProfitRate': ':.1f%'}
+                )
+                fig.update_traces(
+                    textinfo="label+percent entry",
+                    textfont_size=12
+                )
+                fig.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10), 
+                    height=220,
+                    coloraxis_showscale=False  # 컬러바 숨김
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("🟢 수익 | 🟡 보합 | 🔴 손실")
+            else:
+                # 도넛차트: 자산이 2개 이하일 때
+                fig = px.pie(df_treemap, values='Value', names='Coin', hole=0.4)
+                fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=200)
+                st.plotly_chart(fig, use_container_width=True)
     with c2:
         if table_data:
             df = pd.DataFrame(table_data)
             st.dataframe(df.style.apply(lambda x: ['background-color: #fef3c7'] * len(x) if x['_hit'] else [''] * len(x), axis=1), 
                          column_config={"_hit": None, "24H": st.column_config.TextColumn("24H 변동")}, use_container_width=True, height=200)
 
-    # [V7.8] CSV 내보내기 & 코인별 김치 프리미엄
+    # [V7.9] CSV 내보내기 & 코인별 김치 프리미엄
     col_csv, col_kimchi = st.columns(2)
     
     with col_csv:
@@ -1555,7 +1563,7 @@ def render_tools_tab():
     except Exception as e: st.error(f"오류 발생: {e}")
 
 # -----------------------------------------------------------------------------
-# 탭: AI 투자 위원회 (V7.8 - Grok 완벽 지원)
+# 탭: AI 투자 위원회 (V7.9 - Grok 완벽 지원)
 # -----------------------------------------------------------------------------
 def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
     st.markdown("### 🤖 AI 투자 위원회 (4대장 Cross-Check)")
@@ -1598,7 +1606,7 @@ def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
     c4.metric("🚀 Grok", "🐋 공격투자" if grok_key else "❌ 미설정")
 
     if st.button("🗳️ 위원회 소집 및 투표 시작", type="primary", use_container_width=True):
-        # [V7.8] 병렬 처리로 AI 호출 (속도 4배 향상)
+        # [V7.9] 병렬 처리로 AI 호출 (속도 4배 향상)
         with st.spinner("⚡ AI 위원들이 동시에 분석 중입니다... (약 5초 소요)"):
             opinions = {}
             
@@ -2095,8 +2103,13 @@ def render_rebalance_tab():
 # 메인 실행
 # -----------------------------------------------------------------------------
 def main():
+    # [V7.9] 모바일 친화적 로그인 화면 (메인 화면에 배치)
+    if not st.session_state.get('is_logged_in', False):
+        render_mobile_login()
+        return  # 로그인 전에는 대시보드를 표시하지 않음
+    
     gemini_key, openai_key, claude_key, grok_key, auto = render_sidebar()
-    st.markdown("<h1 style='text-align: center; color: #3b82f6;'>🐋 크립토 인사이트 V7.8</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #3b82f6;'>🐋 크립토 인사이트 V7.9</h1>", unsafe_allow_html=True)
     
     tabs = st.tabs(["📊 대시보드", "🔮 사이클/매크로", "🛡️ 헤지", "⚖️ 리밸런싱", "📉 매도 전략", "🤖 AI 위원회", "🔎 심층 분석", "📰 뉴스", "🧮 도구"])
     
@@ -2120,6 +2133,81 @@ def main():
         check_and_send_alerts(st.session_state.portfolio, rate, mvrv)
     
     if auto: time.sleep(10); st.rerun()
+
+# [V7.9] 모바일 친화적 로그인 화면
+def render_mobile_login():
+    """메인 화면 중앙에 로그인 UI 배치 (모바일 사용자 고려)"""
+    st.markdown("""
+    <style>
+        .login-container {
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            text-align: center;
+        }
+        .login-title {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        .login-subtitle {
+            color: #64748b;
+            margin-bottom: 30px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # 중앙 정렬을 위한 컬럼
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>🐋</div>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align:center; margin-bottom:5px;'>크립토 인사이트</h1>", unsafe_allow_html=True)
+        st.markdown("<p class='login-subtitle'>암호화폐 포트폴리오 & AI 분석 대시보드</p>", unsafe_allow_html=True)
+        
+        with st.form("main_login_form", clear_on_submit=False):
+            user_id = st.text_input(
+                "사용자 ID", 
+                placeholder="닉네임을 입력하세요 (영문/숫자)",
+                help="처음 접속 시 자동으로 계정이 생성됩니다."
+            )
+            
+            submitted = st.form_submit_button("🚀 시작하기", use_container_width=True, type="primary")
+            
+            if submitted:
+                if user_id and len(user_id) >= 2:
+                    st.session_state.username = user_id
+                    st.session_state.is_logged_in = True
+                    
+                    # DB에서 데이터 불러오기
+                    saved_data = load_user_data(user_id)
+                    if saved_data:
+                        st.session_state.portfolio = saved_data.get("portfolio", [])
+                        
+                        # 저장된 API 키 불러오기
+                        api_keys = saved_data.get("api_keys", {})
+                        st.session_state.gemini_key = api_keys.get("gemini", "")
+                        st.session_state.openai_key = api_keys.get("openai", "")
+                        st.session_state.claude_key = api_keys.get("claude", "")
+                        st.session_state.grok_key = api_keys.get("grok", "")
+                        st.session_state.telegram_id = saved_data.get("telegram_id", "")
+                        
+                        # 텔레그램 봇 토큰
+                        tg_data = saved_data.get("telegram", {})
+                        if 'bot_token' in tg_data:
+                            st.session_state.telegram['bot_token'] = tg_data['bot_token']
+                    
+                    st.rerun()
+                else:
+                    st.error("⚠️ ID는 2자 이상 입력해주세요.")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        # 하단 정보
+        st.markdown("---")
+        st.caption("💡 **주요 기능**: AI 투자 위원회 | 김치 프리미엄 | 목표가 알림 | 리밸런싱")
+        st.caption("📱 **모바일 지원**: 사이드바 메뉴(☰)에서 자산 추가 및 설정")
+
 
 if __name__ == "__main__":
     main()
