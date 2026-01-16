@@ -264,7 +264,7 @@ def update_asset_history(username, total_krw):
 MODELS = {
     "OPENAI": "gpt-4o",                 
     "ANTHROPIC": "claude-3-5-sonnet-20241022",  # Claude 3.5 Sonnet 최신
-    "GOOGLE": "gemini-2.0-flash-exp",           # Gemini 2.0 Flash (v1beta 호환)         
+    "GOOGLE": "models/gemini-1.5-flash",        # 전체 경로 형식         
     "XAI": "grok-2-latest"              # Grok 2 최신 버전
 }
 
@@ -587,7 +587,7 @@ def get_translated_news(keywords, api_key=None):
     # ==========================================================================
     if eng_items and api_key and GENAI_AVAILABLE:
         try:
-            genai.configure(api_key=api_key)
+            genai.configure(api_key=api_key.strip())  # 공백 제거
             model = genai.GenerativeModel(MODELS['GOOGLE'])
             
             # 번역할 제목들 (번호 붙여서 매칭 정확도 향상)
@@ -646,7 +646,7 @@ def clean_and_translate_desc(text, api_key=None):
     is_korean = (korean_char_count / len(clean_text)) > 0.2 if len(clean_text) > 0 else False
     if not is_korean and api_key and GENAI_AVAILABLE:
         try:
-            genai.configure(api_key=api_key)
+            genai.configure(api_key=api_key.strip())
             return genai.GenerativeModel(MODELS['GOOGLE']).generate_content(f"Translate to Korean:\n\n{clean_text}").text
         except: return clean_text
     return clean_text
@@ -871,6 +871,9 @@ def update_single_key_db(username, key_type, value, is_telegram=False):
         st.error("DB 연결 실패")
         return False
 
+    # 🔧 공백 제거 (복사 시 포함된 앞뒤 공백 제거)
+    value = value.strip() if value else ""
+
     try:
         doc_ref = db.collection("users").document(username)
         
@@ -1061,24 +1064,24 @@ def render_sidebar():
             value=st.session_state.telegram.get('enabled', False)
         )
         
-        # 저장 버튼
-        col_save, col_test = st.columns(2)
+        # 저장 및 테스트 버튼 (간격 조정)
+        col_save, col_test = st.columns([1, 1])
         
         with col_save:
-            if st.button("💾 저장", use_container_width=True):
+            if st.button("저장", key="tg_save_btn", use_container_width=True):
                 st.session_state.telegram['bot_token'] = tg_token
                 st.session_state.telegram['chat_id'] = tg_chat_id
                 st.session_state.telegram['enabled'] = tg_enabled
                 st.session_state.telegram_id = tg_chat_id
                 save_user_data(st.session_state.username)
-                st.success("저장됨!")
+                st.success("✅ 저장 완료!")
+                time.sleep(0.5)
                 st.rerun()
         
         with col_test:
-            # 테스트 버튼 (설정이 있으면 항상 표시)
+            # 테스트 버튼
             test_disabled = not (tg_token and tg_chat_id)
-            if st.button("📤 테스트", use_container_width=True, disabled=test_disabled):
-                # 임시로 값 설정해서 테스트
+            if st.button("테스트", key="tg_test_btn", use_container_width=True, disabled=test_disabled):
                 st.session_state.telegram['bot_token'] = tg_token
                 st.session_state.telegram['chat_id'] = tg_chat_id
                 st.session_state.telegram['enabled'] = True
@@ -1382,7 +1385,7 @@ def render_dashboard_tab(gemini_key):
                      if st.button("✨ Gemini 심층 리포트 생성"):
                         news_context = "\n".join([n['title'] for n in news[:5]])
                         try:
-                            genai.configure(api_key=gemini_key)
+                            genai.configure(api_key=gemini_key.strip())
                             prompt = f"""
                             암호화폐 전문가 {selected} 분석:
                             [가격] ${w_df['c'].iloc[-1]:,.2f}, Rank #{info['rank']}
@@ -2007,7 +2010,7 @@ def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
             def call_gemini():
                 if gemini_key and GENAI_AVAILABLE:
                     try:
-                        genai.configure(api_key=gemini_key)
+                        genai.configure(api_key=gemini_key.strip())
                         model = genai.GenerativeModel(MODELS['GOOGLE'])
                         return ('📰 Gemini (뉴스앵커)', model.generate_content("당신은 거시경제 뉴스 앵커입니다. " + context_prompt).text)
                     except Exception as e:
