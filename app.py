@@ -264,11 +264,56 @@ def update_asset_history(username, total_krw):
 MODELS = {
     "OPENAI": "gpt-4o",                 
     "ANTHROPIC": "claude-3-5-sonnet-20241022",  # Claude 3.5 Sonnet 최신
-    "GOOGLE": "models/gemini-1.5-flash",        # 전체 경로 형식         
+    "GOOGLE": "gemini-1.5-flash",               # REST API용         
     "XAI": "grok-2-latest"              # Grok 2 최신 버전
 }
 
 # 2. 각 AI 호출 함수들
+def ask_gemini(api_key, prompt, system_prompt="You are a helpful assistant. Answer in Korean."):
+    """Google Gemini REST API 직접 호출 (라이브러리 의존 없음)"""
+    if not api_key:
+        return "⚠️ API Key가 없습니다."
+    
+    api_key = api_key.strip()
+    
+    # 여러 모델 시도 (호환성)
+    models_to_try = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    
+    for model in models_to_try:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            
+            headers = {"Content-Type": "application/json"}
+            data = {
+                "contents": [
+                    {"parts": [{"text": f"{system_prompt}\n\n{prompt}"}]}
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 1000
+                }
+            }
+            
+            res = requests.post(url, headers=headers, json=data, timeout=30)
+            
+            if res.status_code == 200:
+                result = res.json()
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    return result['candidates'][0]['content']['parts'][0]['text']
+                else:
+                    return "응답이 비어있습니다."
+            elif res.status_code == 404:
+                # 이 모델이 없으면 다음 모델 시도
+                continue
+            else:
+                error_msg = res.json().get('error', {}).get('message', res.text)
+                return f"❌ 오류: {error_msg}"
+                
+        except Exception as e:
+            continue
+    
+    return "❌ 사용 가능한 Gemini 모델이 없습니다. API 키를 확인해주세요."
+
 def ask_chatgpt(api_key, prompt):
     """OpenAI GPT 호출"""
     if not api_key: 
@@ -583,13 +628,10 @@ def get_translated_news(keywords, api_key=None):
             continue
     
     # ==========================================================================
-    # 3. Gemini로 영어 뉴스 제목 번역
+    # 3. Gemini로 영어 뉴스 제목 번역 (REST API 사용)
     # ==========================================================================
-    if eng_items and api_key and GENAI_AVAILABLE:
+    if eng_items and api_key:
         try:
-            genai.configure(api_key=api_key.strip())  # 공백 제거
-            model = genai.GenerativeModel(MODELS['GOOGLE'])
-            
             # 번역할 제목들 (번호 붙여서 매칭 정확도 향상)
             titles_text = ""
             for idx, item in enumerate(eng_items):
@@ -606,11 +648,12 @@ def get_translated_news(keywords, api_key=None):
 원문:
 {titles_text}"""
             
-            response = model.generate_content(prompt)
+            # REST API 직접 호출
+            response_text = ask_gemini(api_key, prompt, "You are a professional translator.")
             
-            if response and response.text:
+            if response_text and not response_text.startswith("❌") and not response_text.startswith("⚠️"):
                 # 번역 결과 파싱 (번호로 매칭)
-                for line in response.text.strip().split('\n'):
+                for line in response_text.strip().split('\n'):
                     line = line.strip()
                     if not line:
                         continue
@@ -644,10 +687,12 @@ def clean_and_translate_desc(text, api_key=None):
     clean_text = re.sub('<[^<]+?>', '', text).strip()
     korean_char_count = len(re.findall('[가-힣]', clean_text))
     is_korean = (korean_char_count / len(clean_text)) > 0.2 if len(clean_text) > 0 else False
-    if not is_korean and api_key and GENAI_AVAILABLE:
+    if not is_korean and api_key:
         try:
-            genai.configure(api_key=api_key.strip())
-            return genai.GenerativeModel(MODELS['GOOGLE']).generate_content(f"Translate to Korean:\n\n{clean_text}").text
+            result = ask_gemini(api_key, f"Translate to Korean:\n\n{clean_text}", "You are a translator.")
+            if result and not result.startswith("❌") and not result.startswith("⚠️"):
+                return result
+            return clean_text
         except: return clean_text
     return clean_text
 
@@ -1385,7 +1430,6 @@ def render_dashboard_tab(gemini_key):
                      if st.button("✨ Gemini 심층 리포트 생성"):
                         news_context = "\n".join([n['title'] for n in news[:5]])
                         try:
-                            genai.configure(api_key=gemini_key.strip())
                             prompt = f"""
                             암호화폐 전문가 {selected} 분석:
                             [가격] ${w_df['c'].iloc[-1]:,.2f}, Rank #{info['rank']}
@@ -1393,8 +1437,11 @@ def render_dashboard_tab(gemini_key):
                             [뉴스] {news_context}
                             1. 호재/악재 판단 2. 단기 전망 및 이유 3. 한국어 답변
                             """
-                            res = genai.GenerativeModel(MODELS['GOOGLE']).generate_content(prompt).text
-                            st.markdown(f"<div class='ai-box'>{res}</div>", unsafe_allow_html=True)
+                            res = ask_gemini(gemini_key, prompt, "You are a cryptocurrency analyst.")
+                            if res and not res.startswith("❌"):
+                                st.markdown(f"<div class='ai-box'>{res}</div>", unsafe_allow_html=True)
+                            else:
+                                st.error(res)
                         except: st.error("AI 분석 중 오류가 발생했습니다.")
             else:
                 st.warning("데이터를 불러올 수 없습니다. (API 제한 등)")
@@ -2008,14 +2055,10 @@ def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
             
             # 병렬 호출을 위한 작업 정의
             def call_gemini():
-                if gemini_key and GENAI_AVAILABLE:
-                    try:
-                        genai.configure(api_key=gemini_key.strip())
-                        model = genai.GenerativeModel(MODELS['GOOGLE'])
-                        return ('📰 Gemini (뉴스앵커)', model.generate_content("당신은 거시경제 뉴스 앵커입니다. " + context_prompt).text)
-                    except Exception as e:
-                        return ('📰 Gemini', f"❌ 오류: {e}")
-                return ('📰 Gemini', "💤 (Key 없음)")
+                if gemini_key:
+                    result = ask_gemini(gemini_key, context_prompt, "당신은 거시경제 뉴스 앵커입니다. Answer in Korean.")
+                    return ('📰 Gemini (뉴스앵커)', result)
+                return ('📰 Gemini', "⚠️ API Key가 없습니다.")
             
             def call_chatgpt():
                 return ('💼 ChatGPT (펀드매니저)', ask_chatgpt(openai_key, context_prompt))
