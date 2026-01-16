@@ -516,62 +516,127 @@ def get_kimchi_premium(ticker, rate):
 
 @st.cache_data(ttl=1800)
 def get_translated_news(keywords, api_key=None):
-    from urllib.parse import quote
+    """[V7.9] 코인 전문 매체 뉴스 수집 및 번역"""
     
     news_items = []
     
-    # 1. Google News 한국어 RSS (가장 안정적)
-    korean_queries = ["비트코인", "암호화폐", "가상자산"]
-    for query in korean_queries:
+    # ==========================================================================
+    # 1. 한국 코인 전문 매체 (번역 불필요)
+    # ==========================================================================
+    korean_feeds = [
+        {"name": "블록미디어", "url": "https://www.blockmedia.co.kr/feed/", "icon": "📰"},
+        {"name": "토큰포스트", "url": "https://www.tokenpost.kr/rss", "icon": "🪙"},
+    ]
+    
+    for feed in korean_feeds:
         try:
-            url = f"https://news.google.com/rss/search?q={quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-            f = feedparser.parse(url)
-            for entry in f.entries[:3]:
-                # 중복 제거
-                if not any(n['title'] == entry.title for n in news_items):
-                    source = entry.source.title if hasattr(entry, 'source') else "Google News"
+            f = feedparser.parse(feed['url'])
+            for entry in f.entries[:4]:
+                title = entry.title.strip()
+                if not any(n['title'] == title for n in news_items):
+                    pub_date = ""
+                    if hasattr(entry, 'published'):
+                        pub_date = entry.published[:20]
+                    elif hasattr(entry, 'updated'):
+                        pub_date = entry.updated[:20]
+                    
                     news_items.append({
-                        'source': source, 'title': entry.title, 'link': entry.link,
-                        'lang': 'ko', 'date': entry.published[:16] if 'published' in entry else ""
+                        'source': f"{feed['icon']} {feed['name']}", 
+                        'title': title, 
+                        'link': entry.link,
+                        'lang': 'ko', 
+                        'date': pub_date,
                     })
-        except: continue
+        except:
+            continue
     
-    # 2. 영어 뉴스 소스 (API 키 있을 때만 추가)
-    if api_key and GENAI_AVAILABLE:
-        eng_feeds = [
-            {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
-            {"name": "CoinTelegraph", "url": "https://cointelegraph.com/rss"},
-        ]
-        eng_items = []
-        for feed in eng_feeds:
-            try:
-                f = feedparser.parse(feed['url'])
-                for entry in f.entries[:2]:
+    # ==========================================================================
+    # 2. 해외 코인 전문 매체 수집
+    # ==========================================================================
+    eng_feeds = [
+        {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "icon": "🌐"},
+        {"name": "CoinTelegraph", "url": "https://cointelegraph.com/rss", "icon": "📡"},
+        {"name": "The Block", "url": "https://www.theblock.co/rss.xml", "icon": "🧱"},
+    ]
+    
+    eng_items = []
+    for feed in eng_feeds:
+        try:
+            f = feedparser.parse(feed['url'])
+            for entry in f.entries[:3]:
+                title = entry.title.strip()
+                if not any(n['title'] == title for n in eng_items):
+                    pub_date = ""
+                    if hasattr(entry, 'published'):
+                        pub_date = entry.published[:20]
+                    
                     eng_items.append({
-                        'source': feed['name'], 'title': entry.title, 'link': entry.link,
-                        'lang': 'en', 'date': entry.published[:16] if 'published' in entry else ""
+                        'source_name': feed['name'],
+                        'source': f"{feed['icon']} {feed['name']}", 
+                        'original_title': title,
+                        'title': title,
+                        'link': entry.link,
+                        'lang': 'en', 
+                        'date': pub_date,
                     })
-            except: continue
-        
-        # Gemini로 번역
-        if eng_items:
-            try:
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(MODELS['GOOGLE'])
-                titles = [n['title'] for n in eng_items]
-                prompt = f"다음 암호화폐 뉴스 제목들을 한국어로 번역하세요. 번호 없이 각 줄에 번역만 출력:\n" + "\n".join(titles)
-                res = model.generate_content(prompt).text.strip().split('\n')
-                
-                for i, n in enumerate(eng_items):
-                    if i < len(res):
-                        translated = res[i].strip().lstrip('0123456789.-) ').strip()
-                        if translated and len(translated) > 5:
-                            n['title'] = translated
-                            n['lang'] = 'ko'
-                news_items.extend(eng_items)
-            except: pass
+        except:
+            continue
     
-    return news_items[:10]  # 최대 10개
+    # ==========================================================================
+    # 3. Gemini로 영어 뉴스 제목 번역
+    # ==========================================================================
+    if eng_items and api_key and GENAI_AVAILABLE:
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(MODELS['GOOGLE'])
+            
+            # 번역할 제목들 (번호 붙여서 매칭 정확도 향상)
+            titles_text = ""
+            for idx, item in enumerate(eng_items):
+                titles_text += f"{idx+1}. {item['original_title']}\n"
+            
+            prompt = f"""다음 영어 암호화폐 뉴스 제목들을 한국어로 번역해주세요.
+
+규칙:
+- 각 번역 앞에 원본과 같은 번호를 붙여주세요 (예: "1. 번역된 제목")
+- Bitcoin → 비트코인, Ethereum → 이더리움으로 변환
+- ETF, SEC, CEO 등 약어는 그대로 유지
+- 뉴스 제목답게 간결하게
+
+원문:
+{titles_text}"""
+            
+            response = model.generate_content(prompt)
+            
+            if response and response.text:
+                # 번역 결과 파싱 (번호로 매칭)
+                for line in response.text.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # "1. 번역된 제목" 형태에서 번호와 제목 분리
+                    match = re.match(r'^(\d+)[.\)]\s*(.+)$', line)
+                    if match:
+                        idx = int(match.group(1)) - 1  # 0-based index
+                        translated = match.group(2).strip()
+                        
+                        if 0 <= idx < len(eng_items) and translated and len(translated) > 3:
+                            eng_items[idx]['title'] = translated
+                            eng_items[idx]['lang'] = 'ko'
+                            eng_items[idx]['source'] = f"🇺🇸→🇰🇷 {eng_items[idx]['source_name']}"
+            
+        except Exception as e:
+            # 번역 실패해도 원문으로 진행
+            pass
+    
+    # 영어 뉴스 추가
+    news_items.extend(eng_items)
+    
+    # 시간순 정렬 (최신 먼저)
+    news_items.sort(key=lambda x: x.get('date', ''), reverse=True)
+    
+    return news_items[:15]
 
 @st.cache_data(ttl=3600)
 def clean_and_translate_desc(text, api_key=None):
@@ -890,8 +955,8 @@ def render_sidebar():
         # 4. Grok
         render_key_input("Grok API Key", "grok_key", "grok")
         
-        # 5. Telegram Chat ID
-        render_key_input("텔레그램 Chat ID", "telegram_id", "telegram_id", is_password=False, is_telegram=True)
+        # 텔레그램은 별도 섹션으로 이동됨
+        st.caption("📢 텔레그램 알림은 아래 별도 섹션에서 설정")
 
     # 4. 나머지 사이드바 기능 (기존 유지)
     st.sidebar.divider()
@@ -964,30 +1029,99 @@ def render_sidebar():
                 
     st.sidebar.divider()
     
-    # 텔레그램 봇 토큰 관리 (이곳은 덜 중요하므로 기존 형태 유지 또는 필요시 동일하게 변경 가능)
-    with st.sidebar.expander("📢 텔레그램 봇 설정"):
-        st.caption("알림용 봇 토큰 설정")
-        tg_enabled = st.checkbox("알림 활성화", value=st.session_state.telegram.get('enabled', False))
-        tg_token = st.text_input("Bot Token", value=st.session_state.telegram.get('bot_token', ''), type="password")
+    # 텔레그램 봇 설정 (통합 UI)
+    with st.sidebar.expander("📢 텔레그램 알림 설정", expanded=False):
+        st.markdown("##### 🤖 텔레그램 봇 연동")
+        st.caption("목표가 도달, 급등/급락 시 알림을 받습니다.")
         
-        # 채팅방 ID는 위에서 설정한 값을 사용함을 안내
-        st.caption(f"※ Chat ID는 상단의 API 설정값을 사용합니다: {st.session_state.get('telegram_id', '미설정')}")
+        # 현재 설정 상태 표시
+        current_token = st.session_state.telegram.get('bot_token', '')
+        current_chat_id = st.session_state.get('telegram_id', '')
+        
+        # Bot Token 입력
+        tg_token = st.text_input(
+            "Bot Token", 
+            value=current_token, 
+            type="password",
+            placeholder="1234567890:ABCdefGHI...",
+            help="@BotFather에서 생성한 봇 토큰"
+        )
+        
+        # Chat ID 입력
+        tg_chat_id = st.text_input(
+            "Chat ID", 
+            value=current_chat_id,
+            placeholder="123456789",
+            help="@userinfobot에서 확인한 내 Chat ID"
+        )
+        
+        # 알림 활성화
+        tg_enabled = st.checkbox(
+            "🔔 알림 활성화", 
+            value=st.session_state.telegram.get('enabled', False)
+        )
         
         # 저장 버튼
-        if st.button("봇 설정 저장"):
-            st.session_state.telegram['bot_token'] = tg_token
-            st.session_state.telegram['enabled'] = tg_enabled
-            st.session_state.telegram['chat_id'] = st.session_state.get('telegram_id', '')
-            save_user_data(st.session_state.username)
-            st.success("저장됨")
+        col_save, col_test = st.columns(2)
+        
+        with col_save:
+            if st.button("💾 저장", use_container_width=True):
+                st.session_state.telegram['bot_token'] = tg_token
+                st.session_state.telegram['chat_id'] = tg_chat_id
+                st.session_state.telegram['enabled'] = tg_enabled
+                st.session_state.telegram_id = tg_chat_id
+                save_user_data(st.session_state.username)
+                st.success("저장됨!")
+                st.rerun()
+        
+        with col_test:
+            # 테스트 버튼 (설정이 있으면 항상 표시)
+            test_disabled = not (tg_token and tg_chat_id)
+            if st.button("📤 테스트", use_container_width=True, disabled=test_disabled):
+                # 임시로 값 설정해서 테스트
+                st.session_state.telegram['bot_token'] = tg_token
+                st.session_state.telegram['chat_id'] = tg_chat_id
+                st.session_state.telegram['enabled'] = True
+                
+                test_msg = f"""✅ 크립토 인사이트 알림 테스트 성공!
 
-        if tg_enabled and tg_token and st.session_state.get('telegram_id'):
-            if st.button("📤 테스트 알림 보내기"):
-                st.session_state.telegram['chat_id'] = st.session_state.get('telegram_id') # 동기화 확실히
-                if send_telegram_alert("✅ 알림 테스트 성공!"):
-                    st.success("전송 성공!")
+🕐 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+👤 사용자: {st.session_state.username}
+
+이 메시지가 보이면 알림이 정상 작동합니다! 🎉"""
+                
+                if send_telegram_alert(test_msg):
+                    st.success("✅ 전송 성공!")
                 else:
-                    st.error("전송 실패")
+                    st.error("❌ 전송 실패")
+                    st.caption("Bot Token과 Chat ID를 확인해주세요.")
+        
+        # 설정 상태 표시
+        st.divider()
+        if tg_token and tg_chat_id and tg_enabled:
+            st.success("✅ 알림 준비 완료")
+        elif tg_token and tg_chat_id:
+            st.info("ℹ️ '알림 활성화'를 체크해주세요")
+        else:
+            st.warning("⚠️ Bot Token과 Chat ID를 입력해주세요")
+        
+        # 도움말
+        with st.expander("❓ 설정 방법"):
+            st.markdown("""
+            **1. Bot Token 발급**
+            1. 텔레그램에서 `@BotFather` 검색
+            2. `/newbot` 명령어로 봇 생성
+            3. 받은 토큰을 복사
+            
+            **2. Chat ID 확인**
+            1. 텔레그램에서 `@userinfobot` 검색
+            2. `/start` 입력
+            3. 표시된 ID 복사
+            
+            **3. 봇과 대화 시작**
+            - 만든 봇을 검색해서 `/start` 입력
+            - 이 단계를 해야 메시지 수신 가능!
+            """)
     
     # 반환값 (Gemini, OpenAI, Claude, Grok 키, 자동갱신여부)
     return (
@@ -1520,47 +1654,306 @@ def render_deep_tab():
 # 탭 4: 뉴스 & 알림
 # -----------------------------------------------------------------------------
 def render_news_tab(gemini_key):
-    st.markdown("### 📰 뉴스룸 & 알림")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader("실시간 뉴스 (한국어)")
-        st.caption("💡 Google News 한국어 RSS + 주요 암호화폐 미디어")
-        news = get_translated_news([], gemini_key)
-        if news:
-            for n in news:
-                badge = "🇰🇷" if n.get('lang') == 'ko' else "🌐"
-                st.markdown(f"**[{badge} {n['source']}]** [{n['title']}]({n['link']})")
-                st.divider()
+    st.markdown("### 📰 코인 전문 뉴스룸")
+    st.caption("📰 블록미디어 | 🪙 토큰포스트 | 🌐 CoinDesk | 📡 CoinTelegraph | 🧱 The Block")
+    
+    # 상단 컨트롤
+    col_status, col_refresh = st.columns([3, 1])
+    with col_status:
+        if gemini_key:
+            st.success("✅ AI 번역 활성화 (Gemini)")
         else:
-            st.info("뉴스를 불러올 수 없습니다.")
+            st.warning("⚠️ 해외 뉴스 원문 표시 (API 키 필요)")
+    with col_refresh:
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.rerun()
+    
+    st.divider()
+    
+    c1, c2 = st.columns([2, 1])
+    
+    with c1:
+        with st.spinner("뉴스를 불러오는 중..."):
+            # API 키가 있으면 항상 번역 시도
+            news = get_translated_news([], gemini_key)
+        
+        if news:
+            # 번역 통계
+            translated_count = sum(1 for n in news if '→🇰🇷' in n.get('source', ''))
+            english_count = sum(1 for n in news if n.get('lang') == 'en')
+            korean_count = len(news) - translated_count - english_count
+            
+            st.markdown(f"#### 📰 최신 뉴스 ({len(news)}건)")
+            if gemini_key and translated_count > 0:
+                st.caption(f"🇰🇷 국내 {korean_count}건 | 🇺🇸→🇰🇷 번역 {translated_count}건")
+            elif english_count > 0:
+                st.caption(f"🇰🇷 국내 {korean_count}건 | 🌐 영어 {english_count}건")
+            
+            for n in news:
+                # 번역된 해외 뉴스 구분
+                is_translated = '→🇰🇷' in n.get('source', '')
+                is_english = n.get('lang', '') == 'en'
+                
+                if is_translated:
+                    bg_color = "#e0f2fe"  # 파란 배경 (번역됨)
+                    border_color = "#0284c7"
+                elif is_english:
+                    bg_color = "#fef3c7"  # 노란 배경 (영어 원문)
+                    border_color = "#f59e0b"
+                else:
+                    bg_color = "#ffffff"  # 흰 배경 (한국어)
+                    border_color = "#e5e7eb"
+                
+                st.markdown(f"""
+                <div style="background-color: {bg_color}; padding: 12px; border-radius: 8px; margin-bottom: 8px; border: 1px solid {border_color};">
+                    <div style="font-size: 0.8em; color: #64748b; font-weight: 600; margin-bottom: 4px;">{n['source']}</div>
+                    <a href="{n['link']}" target="_blank" style="color: #1e293b; text-decoration: none; font-size: 1em; font-weight: 500;">
+                        {n['title']}
+                    </a>
+                    <div style="font-size: 0.75em; color: #94a3b8; margin-top: 4px;">{n.get('date', '')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # 범례
+            st.markdown("""
+            <div style="font-size: 0.8em; color: #64748b; margin-top: 10px; padding: 8px; background: #f8fafc; border-radius: 4px;">
+                ⬜ 국내 뉴스 | 🟦 AI 번역 완료 | 🟨 영어 원문
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("뉴스를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
+            
+        # 매체 안내
+        with st.expander("📋 수집 매체 안내"):
+            st.markdown("""
+            **🇰🇷 국내 코인 전문 매체**
+            - 📰 블록미디어: 심층 분석
+            - 🪙 토큰포스트: 시장 동향
+            
+            **🌐 해외 코인 전문 매체**
+            - CoinDesk: 글로벌 메이저 (AI 번역)
+            - CoinTelegraph: 업계 분석 (AI 번역)
+            - The Block: 기관 동향 (AI 번역)
+            
+            💡 Gemini API 키가 설정되면 해외 뉴스가 자동 번역됩니다.
+            """)
+    
     with c2:
-        st.subheader("🚨 알림 센터")
+        st.markdown("#### 🚨 알림 센터")
         signals = []
-        if st.session_state.manual_data['mvrv_zscore'] >= 7: signals.append("🔥 MVRV 고평가")
-        if signals: st.error("\n".join(signals))
-        else: st.success("특이사항 없음")
+        
+        mvrv = st.session_state.manual_data.get('mvrv_zscore', 0)
+        if mvrv >= 7: 
+            signals.append(("🔥 MVRV Z-Score 고평가", "error"))
+        elif mvrv >= 5:
+            signals.append(("⚠️ MVRV 주의 구간", "warning"))
+            
+        # 김치 프리미엄 알림
+        try:
+            rate = get_usd_krw_rate()
+            btc_k = get_market_price("BTC", "Upbit")[0]
+            btc_u = get_market_price("BTC", "Binance")[0]
+            kimchi = ((btc_k / (btc_u * rate)) - 1) * 100 if btc_u > 0 else 0
+            if kimchi > 5:
+                signals.append((f"🌶️ 김치 프리미엄 과열 ({kimchi:.1f}%)", "error"))
+            elif kimchi < -2:
+                signals.append((f"🧊 역프리미엄 발생 ({kimchi:.1f}%)", "info"))
+        except:
+            pass
+        
+        if signals: 
+            for sig, sig_type in signals:
+                if sig_type == "error":
+                    st.error(sig)
+                elif sig_type == "warning":
+                    st.warning(sig)
+                else:
+                    st.info(sig)
+        else: 
+            st.success("✅ 특이사항 없음")
+        
+        # API 키 상태
+        st.divider()
+        st.markdown("#### 🔑 번역 상태")
+        if gemini_key:
+            st.success("✅ Gemini 연결됨")
+            st.caption("해외 뉴스 자동 번역 활성화")
+        else:
+            st.warning("⚠️ Gemini API 키 필요")
+            st.caption("사이드바에서 API 키를 설정하면\n해외 뉴스가 한국어로 번역됩니다")
 
 # -----------------------------------------------------------------------------
 # 탭 5: 도구
 # -----------------------------------------------------------------------------
 def render_tools_tab():
     st.markdown("### 🧮 FOMO 계산기")
-    try:
-        c1, c2, c3 = st.columns(3)
-        coin = c1.selectbox("코인", ["BTC-USD", "ETH-USD"])
-        date = c2.date_input("날짜", datetime.now()-timedelta(days=365))
-        amt = c3.number_input("투자금(만원)", 100)
+    st.caption("💡 '그때 샀으면...' 과거 투자 시뮬레이션 - 어떤 코인이든 계산 가능!")
+    
+    # 계산 방식 선택
+    calc_mode = st.radio("계산 방식", ["🇺🇸 USD (달러)", "🇰🇷 KRW (원화)"], horizontal=True)
+    
+    # 코인 자유 입력
+    col_coin, col_date, col_amt = st.columns([1, 1, 1])
+    
+    with col_coin:
+        coin_input = st.text_input(
+            "코인 티커", 
+            value="BTC",
+            placeholder="예: BTC, ETH, SOL, XRP, DOGE, PEPE...",
+            help="코인 심볼을 입력하세요 (대소문자 무관)"
+        ).strip().upper()
+    
+    with col_date:
+        date = st.date_input(
+            "투자 날짜", 
+            datetime.now() - timedelta(days=365), 
+            min_value=datetime(2015, 1, 1),
+            max_value=datetime.now() - timedelta(days=1)
+        )
+    
+    with col_amt:
+        if calc_mode == "🇺🇸 USD (달러)":
+            amt = st.number_input("투자금 (USD)", min_value=1, value=1000, step=100)
+            currency_symbol = "$"
+        else:
+            amt = st.number_input("투자금 (만원)", min_value=1, value=100, step=10)
+            currency_symbol = "₩"
+    
+    # 인기 코인 바로가기
+    st.caption("🔥 인기 코인:")
+    quick_cols = st.columns(8)
+    quick_coins = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "PEPE", "SHIB"]
+    for i, qc in enumerate(quick_coins):
+        if quick_cols[i].button(qc, key=f"quick_{qc}", use_container_width=True):
+            st.session_state['fomo_coin'] = qc
+            st.rerun()
+    
+    # 세션에서 코인 가져오기
+    if 'fomo_coin' in st.session_state:
+        coin_input = st.session_state['fomo_coin']
+        del st.session_state['fomo_coin']
+    
+    if st.button("📊 계산하기", type="primary", use_container_width=True):
+        if not coin_input:
+            st.error("코인 티커를 입력해주세요.")
+            return
+            
+        try:
+            if calc_mode == "🇺🇸 USD (달러)":
+                # Yahoo Finance 사용 (USD)
+                if YFINANCE_AVAILABLE:
+                    ticker_symbol = f"{coin_input}-USD"
+                    
+                    with st.spinner(f"{coin_input} 데이터 조회 중..."):
+                        df = yf.download(ticker_symbol, start=date, end=date + timedelta(days=7), progress=False)
+                        
+                        if df.empty:
+                            st.error(f"❌ '{coin_input}' 데이터를 찾을 수 없습니다. 티커를 확인해주세요.")
+                            st.caption("예: Bitcoin → BTC, Ethereum → ETH, Solana → SOL")
+                            return
+                        
+                        # 멀티인덱스 처리
+                        if isinstance(df.columns, pd.MultiIndex):
+                            past = float(df['Close'].iloc[0, 0])
+                        else:
+                            past = float(df['Close'].iloc[0])
+                        
+                        curr_df = yf.Ticker(ticker_symbol).history(period="1d")
+                        if curr_df.empty:
+                            st.error("현재 가격을 불러올 수 없습니다.")
+                            return
+                            
+                        curr = float(curr_df['Close'].iloc[-1])
+                        
+                        # 수익 계산
+                        coins_bought = amt / past
+                        current_value = coins_bought * curr
+                        profit = current_value - amt
+                        profit_pct = (profit / amt) * 100
+                        
+                        # 결과 표시
+                        st.divider()
+                        st.markdown(f"#### 📈 {coin_input} 투자 시뮬레이션 결과")
+                        
+                        r1, r2, r3 = st.columns(3)
+                        r1.metric("매수 당시 가격", f"${past:,.4f}")
+                        r2.metric("현재 가격", f"${curr:,.4f}", f"{((curr-past)/past)*100:+.1f}%")
+                        r3.metric("보유 수량", f"{coins_bought:,.6f} {coin_input}")
+                        
+                        st.divider()
+                        if profit >= 0:
+                            st.success(f"🎉 **${amt:,}** 투자 → 현재 가치: **${current_value:,.2f}** (수익: **${profit:+,.2f}**, **{profit_pct:+.1f}%**)")
+                        else:
+                            st.error(f"😢 **${amt:,}** 투자 → 현재 가치: **${current_value:,.2f}** (손실: **${profit:,.2f}**, **{profit_pct:.1f}%**)")
+                else:
+                    st.error("yfinance 라이브러리가 필요합니다.")
+            
+            else:
+                # 업비트 사용 (KRW)
+                with st.spinner(f"업비트에서 {coin_input} 데이터 조회 중..."):
+                    # 업비트 일봉 API
+                    date_str = date.strftime("%Y-%m-%dT09:00:00")
+                    url = f"https://api.upbit.com/v1/candles/days?market=KRW-{coin_input}&to={date_str}&count=1"
+                    res = requests.get(url, timeout=5)
+                    
+                    if res.status_code != 200 or not res.json():
+                        st.error(f"❌ 업비트에서 '{coin_input}' 데이터를 찾을 수 없습니다.")
+                        st.caption("업비트에 상장된 코인인지, 해당 날짜에 상장되어 있었는지 확인해주세요.")
+                        return
+                    
+                    past_data = res.json()[0]
+                    past = past_data['trade_price']
+                    
+                    # 현재가 조회
+                    curr_url = f"https://api.upbit.com/v1/ticker?markets=KRW-{coin_input}"
+                    curr_res = requests.get(curr_url, timeout=3)
+                    
+                    if curr_res.status_code != 200 or not curr_res.json():
+                        st.error("현재 가격을 불러올 수 없습니다.")
+                        return
+                        
+                    curr = curr_res.json()[0]['trade_price']
+                    
+                    # 수익 계산 (만원 단위)
+                    amt_krw = amt * 10000
+                    coins_bought = amt_krw / past
+                    current_value = coins_bought * curr
+                    profit = current_value - amt_krw
+                    profit_pct = (profit / amt_krw) * 100
+                    
+                    # 결과 표시
+                    st.divider()
+                    st.markdown(f"#### 📈 {coin_input} 투자 시뮬레이션 결과 (업비트 기준)")
+                    
+                    r1, r2, r3 = st.columns(3)
+                    r1.metric("매수 당시 가격", f"₩{past:,.0f}")
+                    r2.metric("현재 가격", f"₩{curr:,.0f}", f"{((curr-past)/past)*100:+.1f}%")
+                    r3.metric("보유 수량", f"{coins_bought:,.6f} {coin_input}")
+                    
+                    st.divider()
+                    if profit >= 0:
+                        st.success(f"🎉 **{amt}만원** 투자 → 현재 가치: **₩{current_value:,.0f}** (수익: **₩{profit:+,.0f}**, **{profit_pct:+.1f}%**)")
+                    else:
+                        st.error(f"😢 **{amt}만원** 투자 → 현재 가치: **₩{current_value:,.0f}** (손실: **₩{profit:,.0f}**, **{profit_pct:.1f}%**)")
+                        
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+            st.caption("코인 티커가 올바른지 확인해주세요.")
+    
+    # 참고 정보
+    with st.expander("💡 사용 팁"):
+        st.markdown("""
+        **코인 티커 예시**
+        - 비트코인: `BTC` | 이더리움: `ETH` | 솔라나: `SOL`
+        - 리플: `XRP` | 도지코인: `DOGE` | 페페: `PEPE`
+        - 시바이누: `SHIB` | 에이다: `ADA` | 폴카닷: `DOT`
         
-        if st.button("계산하기"):
-            if YFINANCE_AVAILABLE:
-                df = yf.download(coin, start=date, end=date+timedelta(days=3), progress=False)
-                if not df.empty:
-                    past = float(df['Close'].iloc[0])
-                    curr = float(yf.Ticker(coin).history(period="1d")['Close'].iloc[-1])
-                    profit = (amt/past*curr) - amt
-                    st.success(f"현재 가치: {amt+profit:,.0f}만원 ({profit/amt*100:+.1f}%)")
-                else: st.error("해당 날짜 데이터 없음")
-    except Exception as e: st.error(f"오류 발생: {e}")
+        **데이터 출처**
+        - USD 계산: Yahoo Finance (2014년~ 대부분의 코인 지원)
+        - KRW 계산: 업비트 (상장일 이후 데이터)
+        
+        ⚠️ 실제 거래 수수료, 세금 등은 반영되지 않습니다.
+        """)
 
 # -----------------------------------------------------------------------------
 # 탭: AI 투자 위원회 (V7.9 - Grok 완벽 지원)
