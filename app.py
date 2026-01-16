@@ -276,10 +276,50 @@ def ask_gemini(api_key, prompt, system_prompt="You are a helpful assistant. Answ
     
     api_key = api_key.strip()
     
-    # 여러 모델 시도 (호환성)
-    models_to_try = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    # 1. 먼저 사용 가능한 모델 목록 조회
+    available_models = []
+    try:
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        list_res = requests.get(list_url, timeout=10)
+        
+        if list_res.status_code == 200:
+            models_data = list_res.json().get('models', [])
+            for m in models_data:
+                model_name = m.get('name', '').replace('models/', '')
+                # generateContent 지원하는 모델만
+                if 'generateContent' in str(m.get('supportedGenerationMethods', [])):
+                    available_models.append(model_name)
+        elif list_res.status_code == 400:
+            error = list_res.json().get('error', {}).get('message', '')
+            return f"❌ API 키 오류: {error}"
+        else:
+            # 목록 조회 실패해도 계속 진행
+            pass
+    except:
+        pass
     
-    for model in models_to_try:
+    # 2. 사용할 모델 결정
+    preferred_models = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "gemini-1.0-pro"]
+    
+    models_to_try = []
+    if available_models:
+        # 사용 가능한 모델 중에서 선호 순서대로
+        for pref in preferred_models:
+            if pref in available_models:
+                models_to_try.append(pref)
+        # 나머지 사용 가능한 모델도 추가
+        for am in available_models:
+            if am not in models_to_try and 'gemini' in am:
+                models_to_try.append(am)
+    else:
+        models_to_try = preferred_models
+    
+    if not models_to_try:
+        return f"❌ 사용 가능한 모델 없음. 조회된 모델: {available_models}"
+    
+    # 3. 모델 호출 시도
+    last_error = ""
+    for model in models_to_try[:5]:  # 최대 5개만 시도
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
             
@@ -301,29 +341,29 @@ def ask_gemini(api_key, prompt, system_prompt="You are a helpful assistant. Answ
                 if 'candidates' in result and len(result['candidates']) > 0:
                     return result['candidates'][0]['content']['parts'][0]['text']
                 else:
-                    return "응답이 비어있습니다."
-            elif res.status_code == 404:
-                # 이 모델이 없으면 다음 모델 시도
-                continue
+                    last_error = f"{model}: 응답 비어있음"
+                    continue
             else:
-                error_msg = res.json().get('error', {}).get('message', res.text)
-                return f"❌ 오류: {error_msg}"
-                
+                error_msg = res.json().get('error', {}).get('message', res.text)[:100]
+                last_error = f"{model}: {res.status_code} - {error_msg}"
+                continue
+                    
         except Exception as e:
+            last_error = f"{model}: {str(e)[:50]}"
             continue
     
-    return "❌ 사용 가능한 Gemini 모델이 없습니다. API 키를 확인해주세요."
+    return f"❌ Gemini 실패: {last_error}. 사용가능모델: {available_models[:3]}"
 
 def ask_chatgpt(api_key, prompt):
-    """OpenAI GPT 호출"""
+    """OpenAI GPT 호출 - 펀드매니저 역할"""
     if not api_key: 
         return "⚠️ API Key가 없습니다."
     try:
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         data = {
             "model": MODELS["OPENAI"],
             "messages": [
-                {"role": "system", "content": "You are a conservative hedge fund manager. Answer in Korean."}, 
+                {"role": "system", "content": "당신은 10년 경력의 펀드매니저입니다. 리스크 대비 수익률을 중시하며, 포트폴리오 분산과 자산 배분 관점에서 분석합니다. 한국어로 답변하세요."}, 
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.5
@@ -334,16 +374,16 @@ def ask_chatgpt(api_key, prompt):
         return f"연결 실패: {e}"
 
 def ask_claude(api_key, prompt):
-    """Anthropic Claude 호출"""
+    """Anthropic Claude 호출 - 데이터 분석가 역할"""
     if not api_key: 
         return "⚠️ API Key가 없습니다."
     try:
-        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+        headers = {"x-api-key": api_key.strip(), "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
         data = {
             "model": MODELS["ANTHROPIC"],
             "max_tokens": 1000,
             "messages": [{"role": "user", "content": prompt}],
-            "system": "You are a cold-hearted data analyst. Answer in Korean."
+            "system": "당신은 온체인 데이터와 기술적 지표를 전문으로 하는 데이터 분석가입니다. 숫자와 차트 패턴을 기반으로 객관적이고 냉철하게 분석합니다. 한국어로 답변하세요."
         }
         res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data, timeout=20)
         return res.json()['content'][0]['text'] if res.status_code == 200 else f"오류: {res.text}"
@@ -351,21 +391,19 @@ def ask_claude(api_key, prompt):
         return f"연결 실패: {e}"
 
 def ask_grok(api_key, prompt):
-    """xAI (Grok) API 호출 함수"""
+    """xAI (Grok) API 호출 - 거시경제 분석 전문가 역할"""
     if not api_key: 
         return "⚠️ API Key가 없습니다."
     try:
-        # Grok은 OpenAI와 호환되는 방식이지만 엔드포인트가 다릅니다.
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
         data = {
             "model": MODELS["XAI"],
             "messages": [
-                {"role": "system", "content": "You are an aggressive crypto whale. Answer in Korean."}, 
+                {"role": "system", "content": "당신은 거시경제 분석 전문가입니다. 금리, 인플레이션, 달러 강세, 연준 정책 등 매크로 환경이 암호화폐에 미치는 영향을 분석합니다. 한국어로 답변하세요."}, 
                 {"role": "user", "content": prompt}
             ],
             "stream": False
         }
-        # xAI 공식 엔드포인트
         res = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=data, timeout=20)
         
         if res.status_code == 200:
@@ -559,7 +597,7 @@ def get_kimchi_premium(ticker, rate):
     except:
         return None
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=600)  # 10분 캐시
 def get_translated_news(keywords, api_key=None):
     """[V7.9] 코인 전문 매체 뉴스 수집 및 번역"""
     
@@ -1716,6 +1754,8 @@ def render_news_tab(gemini_key):
             st.warning("⚠️ 해외 뉴스 원문 표시 (API 키 필요)")
     with col_refresh:
         if st.button("🔄 새로고침", use_container_width=True):
+            # 뉴스 캐시만 클리어
+            get_translated_news.clear()
             st.rerun()
     
     st.divider()
@@ -2043,10 +2083,10 @@ def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
     # 위원회 현황
     st.markdown("#### 👥 위원회 구성")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("🧠 Gemini", "📰 뉴스앵커" if gemini_key else "❌ 미설정")
+    c1.metric("🧠 Gemini", "📊 퀀트분석" if gemini_key else "❌ 미설정")
     c2.metric("💼 ChatGPT", "🏦 펀드매니저" if openai_key else "❌ 미설정")
     c3.metric("📊 Claude", "📈 데이터분석" if claude_key else "❌ 미설정")
-    c4.metric("🚀 Grok", "🐋 공격투자" if grok_key else "❌ 미설정")
+    c4.metric("🌍 Grok", "🏛️ 매크로분석" if grok_key else "❌ 미설정")
 
     if st.button("🗳️ 위원회 소집 및 투표 시작", type="primary", use_container_width=True):
         # [V7.9] 병렬 처리로 AI 호출 (속도 4배 향상)
@@ -2056,18 +2096,18 @@ def render_ai_council_tab(gemini_key, openai_key, claude_key, grok_key):
             # 병렬 호출을 위한 작업 정의
             def call_gemini():
                 if gemini_key:
-                    result = ask_gemini(gemini_key, context_prompt, "당신은 거시경제 뉴스 앵커입니다. Answer in Korean.")
-                    return ('📰 Gemini (뉴스앵커)', result)
-                return ('📰 Gemini', "⚠️ API Key가 없습니다.")
+                    result = ask_gemini(gemini_key, context_prompt, "당신은 퀀트 분석가입니다. 기술적 지표, 거래량, 변동성 등 정량적 데이터를 기반으로 분석합니다. 한국어로 답변하세요.")
+                    return ('📊 Gemini (퀀트분석)', result)
+                return ('📊 Gemini', "⚠️ API Key가 없습니다.")
             
             def call_chatgpt():
-                return ('💼 ChatGPT (펀드매니저)', ask_chatgpt(openai_key, context_prompt))
+                return ('🏦 ChatGPT (펀드매니저)', ask_chatgpt(openai_key, context_prompt))
             
             def call_claude():
-                return ('📊 Claude (데이터분석)', ask_claude(claude_key, context_prompt))
+                return ('📈 Claude (데이터분석)', ask_claude(claude_key, context_prompt))
             
             def call_grok():
-                return ('🚀 Grok (공격투자)', ask_grok(grok_key, context_prompt))
+                return ('🏛️ Grok (매크로분석)', ask_grok(grok_key, context_prompt))
             
             # ThreadPoolExecutor로 병렬 실행
             with ThreadPoolExecutor(max_workers=4) as executor:
